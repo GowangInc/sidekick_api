@@ -5,13 +5,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Track which tabs have the panel open
+const openPanelTabs = new Set();
+
 chrome.action.onClicked.addListener(async (tab) => {
+  openPanelTabs.add(tab.id);
   await chrome.sidePanel.setOptions({
     tabId: tab.id,
-    path: 'sidepanel.html',
     enabled: true
   });
   chrome.sidePanel.open({ tabId: tab.id });
+});
+
+// Clean up when tabs are closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+  openPanelTabs.delete(tabId);
 });
 
 async function handleAIMessage(content, context) {
