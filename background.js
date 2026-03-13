@@ -92,6 +92,7 @@ Place commands on their own line in your response:
 - [SELECT: css-selector | value] — Select a dropdown option by value
 - [SCROLL: up] or [SCROLL: down] or [SCROLL: selector] — Scroll the page or to an element
 - [READ: css-selector] — Extract and return text content from an element
+- [SCREENSHOT] — Capture a screenshot of the current page
 - [NAVIGATE: url] — Navigate to a URL
 - [WAIT: milliseconds] — Wait for the page to settle (e.g. after a click)
 
@@ -125,7 +126,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Build first user message with page context
   let textContent = userMessage;
   if (context) {
-    textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 10000)}\n\nUser Request: ${userMessage}`;
+    textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 50000)}\n\nUser Request: ${userMessage}`;
   }
 
   // Build message content — with or without screenshot
@@ -215,7 +216,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 
     let followUp = `[Action results]\n${resultSummary}`;
     if (freshContext) {
-      followUp += `\n\n[Updated page content — this is what is currently displayed]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nFull Page Content:\n${freshContext.text.slice(0, 10000)}`;
+      followUp += `\n\n[Updated page content — this is what is currently displayed]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nFull Page Content:\n${freshContext.text.slice(0, 50000)}`;
     }
     followUp += '\n\nIMPORTANT: The page content above is LIVE and CURRENT. Read it carefully and answer the user\'s original question using this content. Do NOT say the page is loading or ask the user what they see.';
 
@@ -335,7 +336,7 @@ async function getPageContextFromTab(tabId) {
   try {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 15000) })
+      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 60000) })
     });
     return result.result;
   } catch {
@@ -345,11 +346,11 @@ async function getPageContextFromTab(tabId) {
 
 async function parseAndExecuteCommands(text, tabId) {
   const results = [];
-  const commandRegex = /\[(CLICK|FILL|TYPE|SELECT|SCROLL|READ|NAVIGATE|WAIT):\s*(.+?)\]/g;
+  const commandRegex = /\[(CLICK|FILL|TYPE|SELECT|SCROLL|READ|SCREENSHOT|NAVIGATE|WAIT):\s*(.+?)\]|\[SCREENSHOT\]/g;
 
   for (const match of text.matchAll(commandRegex)) {
-    const command = match[1];
-    const args = match[2];
+    const command = match[1] || 'SCREENSHOT';
+    const args = match[2] || '';
 
     try {
       let result;
@@ -378,6 +379,16 @@ async function parseAndExecuteCommands(text, tabId) {
         case 'READ':
           result = await executeOnPage(tabId, 'read', { selector: args.trim() });
           break;
+        case 'SCREENSHOT': {
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+            result = 'Screenshot captured';
+          } catch (error) {
+            result = 'Failed to capture screenshot: ' + error.message;
+          }
+          break;
+        }
         case 'NAVIGATE':
           result = await executeOnPage(tabId, 'navigate', { url: args.trim() });
           break;
@@ -558,7 +569,7 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
 
   let messageContent = userMessage;
   if (context && context.text) {
-    messageContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 10000)}\n\nUser Request: ${userMessage}`;
+    messageContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 50000)}\n\nUser Request: ${userMessage}`;
   }
 
   let messages = [{ role: 'user', content: messageContent }];
@@ -592,7 +603,7 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
 async function callAPI(config, messages, tools, systemPrompt) {
   const body = {
     model: config.model,
-    max_tokens: 4096,
+    max_tokens: 16384,
     system: systemPrompt,
     messages
   };
