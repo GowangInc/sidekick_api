@@ -1,7 +1,7 @@
 const PROVIDER_DEFAULTS = {
   anthropic: {
     baseUrl: 'https://api.anthropic.com',
-    model: 'claude-3-5-sonnet-20241022'
+    model: 'claude-sonnet-4-5'
   },
   openai: {
     baseUrl: 'https://api.openai.com',
