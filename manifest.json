@@ -16,7 +16,11 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_icon": "favicon.ico"
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   },
   "options_page": "popup.html",
   "content_scripts": [
@@ -27,8 +31,8 @@
     }
   ],
   "icons": {
-    "16": "favicon.ico",
-    "48": "favicon.ico",
-    "128": "favicon.ico"
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   }
 }

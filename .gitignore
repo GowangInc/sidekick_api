@@ -1,0 +1,14 @@
+# Unnecessary files
+andrew.jpg
+favicon.ico
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
