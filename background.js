@@ -66,12 +66,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then(sendResponse);
     return true;
   }
+  if (message.type === 'TEST_TOOL_USE') {
+    testToolUseSupport(message.config).then(sendResponse);
+    return true;
+  }
   if (message.type === 'CLEAR_HISTORY') {
     conversationHistory.delete(message.tabId);
     sendResponse({ ok: true });
     return false;
   }
 });
+
+async function testToolUseSupport(config) {
+  try {
+    const testTools = [{
+      name: 'test_tool',
+      description: 'Test tool',
+      input_schema: { type: 'object', properties: {}, required: [] }
+    }];
+    await callAPI(config, [{ role: 'user', content: 'test' }], testTools, 'Test');
+    return { supported: true };
+  } catch (error) {
+    return { supported: false, error: error.message };
+  }
+}
 
 async function handleAIMessage(content, context, screenshot, tabId) {
   const { apiConfig } = await chrome.storage.local.get('apiConfig');

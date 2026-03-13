@@ -75,6 +75,23 @@ async function saveSettings() {
     model: document.getElementById('model').value,
     toolUse: document.getElementById('toolUse').checked
   };
+
+  // Test tool use if enabled
+  if (apiConfig.toolUse) {
+    const testResult = await chrome.runtime.sendMessage({
+      type: 'TEST_TOOL_USE',
+      config: apiConfig
+    });
+    if (!testResult.supported) {
+      if (confirm('Tool use is not supported by this API endpoint. Disable tool use and continue?')) {
+        apiConfig.toolUse = false;
+        document.getElementById('toolUse').checked = false;
+      } else {
+        return;
+      }
+    }
+  }
+
   await chrome.storage.local.set({ apiConfig });
   settingsPanel.style.display = 'none';
   addMessage('Settings saved', 'assistant');
