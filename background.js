@@ -122,7 +122,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 
   // Action loop: AI responds → execute commands → get new page → AI continues
   const allActionResults = [];
-  let finalText = '';
+  const allResponses = [];
   const MAX_TURNS = 25;
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -142,7 +142,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 
     const textBlock = response.content.find(b => b.type === 'text');
     const text = textBlock ? textBlock.text : 'Done';
-    finalText = text;
+    allResponses.push(text);
 
     history.push({ role: 'assistant', content: text });
 
@@ -153,8 +153,8 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
     // If no commands, we're done — AI gave a final answer
     if (actionResults.length === 0) break;
 
-    // Commands were executed — wait for page to settle, then get fresh context
-    await new Promise(r => setTimeout(r, 4000));
+    // Wait for page to fully load after commands
+    await waitForPageLoad(tabId, 8000);
 
     const freshContext = await getPageContextFromTab(tabId);
     const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
@@ -173,10 +173,43 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   }
 
   return {
-    content: finalText,
+    content: allResponses.join('\n\n'),
     commandsExecuted: allActionResults.length > 0,
     actionResults: allActionResults
   };
+}
+
+// Wait for a tab to finish loading (or timeout)
+async function waitForPageLoad(tabId, timeoutMs = 8000) {
+  // First give a small initial delay for navigation to start
+  await new Promise(r => setTimeout(r, 500));
+
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, timeoutMs);
+
+    function listener(updatedTabId, changeInfo) {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        // Extra delay for JS-rendered content (React, etc.)
+        setTimeout(resolve, 1000);
+      }
+    }
+
+    // Check if already loaded
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === 'complete') {
+        clearTimeout(timeout);
+        // Still wait a bit for dynamic content
+        setTimeout(resolve, 2000);
+      } else {
+        chrome.tabs.onUpdated.addListener(listener);
+      }
+    });
+  });
 }
 
 // Fetch page context directly from the background (no sidepanel needed)
