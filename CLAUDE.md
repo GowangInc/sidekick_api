@@ -3,7 +3,7 @@
 ## Overview
 A Chrome extension providing an AI-powered browser sidekick for web page interaction. Uses Anthropic's tool calling API to enable the AI to directly click elements and fill forms on web pages.
 
-## Current Status (v1.3.0)
+## Current Status (v2.2.0)
 
 ### Working Features
 - Sidebar opens per-tab when extension icon is clicked
@@ -11,6 +11,9 @@ A Chrome extension providing an AI-powered browser sidekick for web page interac
 - Settings panel for API configuration (Anthropic/OpenAI/Custom endpoints)
 - Corporate dark theme UI
 - Tool calling implementation with proper loop
+- Screenshot capture with /screenshot command
+- Conversation export to JSON with /export command
+- Streaming response support with loading animations
 
 ### Architecture
 - **Manifest V3** Chrome extension

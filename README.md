@@ -7,6 +7,8 @@ A Chrome extension that provides an AI-powered browser sidekick for web page int
 - **Tab-Specific Sidebar**: Opens alongside the current tab
 - **Auto Page Loading**: Automatically reads page content on open
 - **Tool Calling**: AI can click elements and fill forms using Anthropic's tool use API
+- **Screenshot Capture**: Save page screenshots with /screenshot command
+- **Conversation Export**: Export chat history to JSON
 - **Flexible API**: Works with Anthropic, OpenAI, or custom endpoints (like foxcode.rjj.cc)
 - **Corporate Design**: Professional dark theme interface
 
@@ -35,6 +37,8 @@ A Chrome extension that provides an AI-powered browser sidekick for web page int
 - "Fill the email field with test@example.com"
 - "What's on this page?"
 - "Summarize this article"
+- "/screenshot" - Save current page screenshot
+- "/export" - Export conversation to JSON
 
 ## Configuration
 
@@ -50,7 +54,7 @@ A Chrome extension that provides an AI-powered browser sidekick for web page int
 
 ## Version
 
-Current: 1.5.0
+Current: 2.2.0
 
 
 
