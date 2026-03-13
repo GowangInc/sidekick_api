@@ -5,13 +5,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-chrome.action.onClicked.addListener(async (tab) => {
-  await chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    path: 'sidepanel.html',
-    enabled: true
-  });
-  await chrome.sidePanel.open({ tabId: tab.id });
+chrome.action.onClicked.addListener((tab) => {
+  chrome.sidePanel.open({ tabId: tab.id });
 });
 
 async function handleAIMessage(content, context) {
