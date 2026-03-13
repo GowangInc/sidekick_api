@@ -10,6 +10,8 @@ const refreshBtn = document.getElementById('refresh-btn');
 let pageContext = null;
 let lockedTabId = null;
 let screenshotBase64 = null;
+let port = null;
+let loadingEl = null;
 
 // Lock to the current tab on startup
 init();
@@ -33,9 +35,13 @@ async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     lockedTabId = tab.id;
+
+    // Open a port for streaming status updates from background
+    port = chrome.runtime.connect({ name: `sidepanel-${lockedTabId}` });
+    port.onMessage.addListener(onStatusUpdate);
+
     await refreshContext();
     addMessage(`Page loaded: ${pageContext?.title || 'Unknown'}`, 'assistant');
-    // Watch for navigation within the locked tab
     chrome.tabs.onUpdated.addListener(onTabUpdated);
   } catch (error) {
     addMessage('Failed to initialize: ' + error.message, 'error');
@@ -47,6 +53,11 @@ function onTabUpdated(tabId, changeInfo, tab) {
   if (changeInfo.status === 'complete') {
     refreshContext();
   }
+}
+
+function onStatusUpdate(message) {
+  if (message.type !== 'status') return;
+  updateLoading(message.status, message);
 }
 
 async function refreshContext() {
@@ -87,6 +98,53 @@ function updatePageInfoBar() {
   pageInfo.style.display = 'flex';
 }
 
+// ── Loading animation ──
+
+function showLoading() {
+  if (loadingEl) return;
+  loadingEl = document.createElement('div');
+  loadingEl.className = 'message loading';
+  loadingEl.innerHTML = `
+    <div class="loading-dots">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="loading-status">Thinking...</div>
+  `;
+  messagesDiv.appendChild(loadingEl);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function updateLoading(status, data) {
+  if (!loadingEl) return;
+  const statusEl = loadingEl.querySelector('.loading-status');
+  if (!statusEl) return;
+
+  switch (status) {
+    case 'thinking':
+      statusEl.textContent = data.turn > 0 ? `Thinking (step ${data.turn + 1})...` : 'Thinking...';
+      break;
+    case 'acting':
+      statusEl.textContent = `Executing: ${data.actions?.[0] || 'action'}`;
+      break;
+    case 'waiting':
+      statusEl.textContent = data.message || 'Waiting for page...';
+      break;
+    case 'reading':
+      statusEl.textContent = 'Reading page content...';
+      break;
+  }
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+function hideLoading() {
+  if (loadingEl) {
+    loadingEl.remove();
+    loadingEl = null;
+  }
+}
+
+// ── Messaging ──
+
 async function sendMessage() {
   const content = input.value.trim();
   if (!content) return;
@@ -97,6 +155,7 @@ async function sendMessage() {
 
   // Take a fresh screenshot right before sending
   await refreshContext();
+  showLoading();
 
   try {
     const response = await chrome.runtime.sendMessage({
@@ -107,22 +166,26 @@ async function sendMessage() {
       tabId: lockedTabId
     });
 
+    hideLoading();
+
     if (response.error) {
       addMessage(response.error, 'error');
     } else {
-      addMessage(response.content, 'assistant');
-
-      // If commands were executed, show results and refresh
+      // Show action results first if any
       if (response.commandsExecuted && response.actionResults) {
         for (const ar of response.actionResults) {
-          addMessage(`Action: ${ar.command} → ${ar.result}`, 'action');
+          addMessage(`${ar.command} -> ${ar.result}`, 'action');
         }
-        // Wait a moment for page to settle, then refresh context
-        await new Promise(r => setTimeout(r, 1500));
+      }
+      // Show AI responses (may be multiple from the loop)
+      addMessage(response.content, 'assistant');
+      // Refresh context to stay in sync
+      if (response.commandsExecuted) {
         await refreshContext();
       }
     }
   } catch (error) {
+    hideLoading();
     addMessage('Failed to send message: ' + error.message, 'error');
   }
 

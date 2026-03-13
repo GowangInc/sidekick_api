@@ -23,6 +23,13 @@
     .assistant { background: white; margin-right: 40px; border: 1px solid #e0e0e0; }
     .error { background: #fff3cd; color: #856404; border: 1px solid #ffc107; }
     .action { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; font-size: 11px; font-family: monospace; }
+    .loading { background: white; margin-right: 40px; border: 1px solid #e0e0e0; display: flex; align-items: center; gap: 10px; }
+    .loading-dots { display: flex; gap: 4px; }
+    .loading-dots span { width: 6px; height: 6px; background: #0066cc; border-radius: 50%; animation: bounce 1.4s ease-in-out infinite; }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+    .loading-status { font-size: 12px; color: #666; font-style: italic; }
     #input-area { display: flex; padding: 12px; background: white; border-top: 1px solid #e0e0e0; gap: 8px; }
     #input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; }
     button { padding: 10px 16px; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500; }

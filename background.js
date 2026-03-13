@@ -10,6 +10,9 @@ let visionSupported = true;
 // Conversation history per tab
 const conversationHistory = new Map();
 
+// Active ports from sidepanels (for streaming status updates)
+const activePorts = new Map();
+
 // Handle action click manually: enable panel for this tab, then open it
 chrome.action.onClicked.addListener(async (tab) => {
   openPanelTabs.add(tab.id);
@@ -25,7 +28,25 @@ chrome.action.onClicked.addListener(async (tab) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   openPanelTabs.delete(tabId);
   conversationHistory.delete(tabId);
+  activePorts.delete(tabId);
 });
+
+// Listen for port connections from sidepanel
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name.startsWith('sidepanel-')) {
+    const tabId = parseInt(port.name.split('-')[1]);
+    activePorts.set(tabId, port);
+    port.onDisconnect.addListener(() => activePorts.delete(tabId));
+  }
+});
+
+// Send a status update to the sidepanel
+function sendStatus(tabId, status, data) {
+  const port = activePorts.get(tabId);
+  if (port) {
+    try { port.postMessage({ type: 'status', status, ...data }); } catch {}
+  }
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_MESSAGE') {
@@ -78,12 +99,12 @@ Place commands on their own line in your response:
 
 - For questions about the page, just answer normally — no commands needed.
 - When asked to interact, explain briefly what you'll do, then use commands.
-- After you execute commands, you will automatically receive the updated page content. Use it to continue the task or answer the user's question.
+- After you execute commands, you will automatically receive the updated page content including the full text of the new page. Read it carefully and use it to answer the user's original question.
 - Use [READ: selector] to extract specific data from elements.
 - For forms, prefer [TYPE: ...] over [FILL: ...] for dynamic/React-based pages.
 - You can chain multiple commands in one response for multi-step tasks.
 - You have conversation memory — you remember what you've done and seen before in this session.
-- IMPORTANT: When you navigate or click and get updated page content, immediately analyze it and respond with the information the user asked for. Do NOT ask the user to wait or confirm — you already have the new page data.`;
+- CRITICAL: After commands execute, you WILL receive the fresh page content automatically. You MUST analyze it and give a complete answer. NEVER say "the page should be loading" or "let me know what you see" — you can see the page yourself in the content provided to you.`;
 
 async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Get or create conversation history for this tab
@@ -126,6 +147,8 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   const MAX_TURNS = 25;
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
+    sendStatus(tabId, 'thinking', { turn });
+
     let response;
     try {
       response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
@@ -153,17 +176,35 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
     // If no commands, we're done — AI gave a final answer
     if (actionResults.length === 0) break;
 
-    // Wait for page to fully load after commands
-    await waitForPageLoad(tabId, 8000);
+    // Send action status to sidepanel
+    sendStatus(tabId, 'acting', {
+      actions: actionResults.map(r => r.command),
+      turn
+    });
 
+    // Determine if navigation happened (CLICK or NAVIGATE)
+    const hasNavigation = actionResults.some(r =>
+      r.command.startsWith('NAVIGATE:') ||
+      (r.command.startsWith('CLICK:') && !r.result.includes('not found'))
+    );
+
+    if (hasNavigation) {
+      sendStatus(tabId, 'waiting', { message: 'Waiting for page to load...' });
+      await waitForPageLoad(tabId, 10000);
+    } else {
+      // Non-navigation action — short delay
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    sendStatus(tabId, 'reading', { message: 'Reading updated page...' });
     const freshContext = await getPageContextFromTab(tabId);
     const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
 
     let followUp = `[Action results]\n${resultSummary}`;
     if (freshContext) {
-      followUp += `\n\n[Updated page]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nContent:\n${freshContext.text.slice(0, 10000)}`;
+      followUp += `\n\n[Updated page - you MUST use this content to answer]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nFull Page Content:\n${freshContext.text.slice(0, 10000)}`;
     }
-    followUp += '\n\nPlease continue — describe what you see or take the next action.';
+    followUp += '\n\nNow analyze the page content above and provide the answer the user originally asked for. Do NOT say the page is loading — you have the full content above.';
 
     history.push({ role: 'user', content: followUp });
 
@@ -173,53 +214,55 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   }
 
   return {
-    content: allResponses.join('\n\n'),
+    content: allResponses.join('\n\n---\n\n'),
     commandsExecuted: allActionResults.length > 0,
     actionResults: allActionResults
   };
 }
 
-// Wait for a tab to finish loading (or timeout)
+// Wait for a tab to finish loading after navigation
 async function waitForPageLoad(tabId, timeoutMs = 10000) {
-  // Record the current URL so we can detect navigation
-  let currentUrl;
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    currentUrl = tab.url;
-  } catch {
-    currentUrl = '';
-  }
-
   return new Promise((resolve) => {
-    let navigationStarted = false;
+    let settled = false;
 
-    const timeout = setTimeout(() => {
+    const finish = () => {
+      if (settled) return;
+      settled = true;
       chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
-    }, timeoutMs);
+      clearTimeout(fallbackTimeout);
+      // Extra delay for JS rendering
+      setTimeout(resolve, 2000);
+    };
 
-    function listener(updatedTabId, changeInfo, tab) {
+    // Fallback timeout — if nothing happens, resolve anyway
+    const fallbackTimeout = setTimeout(finish, timeoutMs);
+
+    let sawLoading = false;
+
+    function listener(updatedTabId, changeInfo) {
       if (updatedTabId !== tabId) return;
 
-      // Detect that navigation has started (URL changed or loading started)
-      if (changeInfo.url || changeInfo.status === 'loading') {
-        navigationStarted = true;
+      if (changeInfo.status === 'loading') {
+        sawLoading = true;
       }
 
-      // Wait for navigation to complete
-      if (navigationStarted && changeInfo.status === 'complete') {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(listener);
-        // Extra delay for JS-rendered content
-        setTimeout(resolve, 1500);
+      if (sawLoading && changeInfo.status === 'complete') {
+        finish();
       }
     }
 
     chrome.tabs.onUpdated.addListener(listener);
+
+    // If the page is already navigating, check current status
+    chrome.tabs.get(tabId).then(tab => {
+      if (tab.status === 'loading') {
+        sawLoading = true;
+      }
+    }).catch(() => {});
   });
 }
 
-// Fetch page context directly from the background (no sidepanel needed)
+// Fetch page context directly from the background
 async function getPageContextFromTab(tabId) {
   try {
     const [result] = await chrome.scripting.executeScript({
@@ -234,8 +277,6 @@ async function getPageContextFromTab(tabId) {
 
 async function parseAndExecuteCommands(text, tabId) {
   const results = [];
-
-  // Match all command patterns
   const commandRegex = /\[(CLICK|FILL|TYPE|SELECT|SCROLL|READ|NAVIGATE|WAIT):\s*(.+?)\]/g;
 
   for (const match of text.matchAll(commandRegex)) {
@@ -377,24 +418,14 @@ async function executeOnPage(tabId, action, params) {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId },
       func: (target) => {
-        if (target === 'up') {
-          window.scrollBy(0, -500);
-          return 'Scrolled up';
-        } else if (target === 'down') {
-          window.scrollBy(0, 500);
-          return 'Scrolled down';
-        } else if (target === 'top') {
-          window.scrollTo(0, 0);
-          return 'Scrolled to top';
-        } else if (target === 'bottom') {
-          window.scrollTo(0, document.body.scrollHeight);
-          return 'Scrolled to bottom';
-        } else {
-          const el = document.querySelector(target);
-          if (!el) return 'Element not found: ' + target;
-          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          return 'Scrolled to: ' + target;
-        }
+        if (target === 'up') { window.scrollBy(0, -500); return 'Scrolled up'; }
+        if (target === 'down') { window.scrollBy(0, 500); return 'Scrolled down'; }
+        if (target === 'top') { window.scrollTo(0, 0); return 'Scrolled to top'; }
+        if (target === 'bottom') { window.scrollTo(0, document.body.scrollHeight); return 'Scrolled to bottom'; }
+        const el = document.querySelector(target);
+        if (!el) return 'Element not found: ' + target;
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        return 'Scrolled to: ' + target;
       },
       args: [params.target]
     });
