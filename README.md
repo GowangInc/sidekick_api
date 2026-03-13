@@ -42,9 +42,11 @@ A Chrome extension that provides an AI-powered browser sidekick for web page int
 - Base URL: `https://api.anthropic.com`
 - Model: `claude-3-5-sonnet-20241022`
 
-**Custom (foxcode.rjj.cc):**
+**Foxcode (Recommended):**
+- Sign up: [https://foxcode.rjj.cc/auth/register?aff=82E8OC](https://foxcode.rjj.cc/auth/register?aff=82E8OC)
 - Base URL: `https://foxcode.rjj.cc`
 - Model: Your model name
+- Affordable API access with Claude support
 
 ## Version
 
