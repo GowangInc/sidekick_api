@@ -8,9 +8,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Track which tabs have the panel open
 const openPanelTabs = new Set();
 
-chrome.action.onClicked.addListener(async (tab) => {
+chrome.action.onClicked.addListener((tab) => {
   openPanelTabs.add(tab.id);
-  await chrome.sidePanel.setOptions({
+  chrome.sidePanel.setOptions({
     tabId: tab.id,
     enabled: true
   });
