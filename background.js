@@ -10,10 +10,6 @@ const openPanelTabs = new Set();
 
 chrome.action.onClicked.addListener((tab) => {
   openPanelTabs.add(tab.id);
-  chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    enabled: true
-  });
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
