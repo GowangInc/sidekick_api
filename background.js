@@ -5,7 +5,7 @@ chrome.sidePanel
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_MESSAGE') {
-    handleAIMessage(message.content, message.context).then(sendResponse);
+    handleAIMessage(message.content, message.context, message.tabId).then(sendResponse);
     return true;
   }
 });
@@ -22,20 +22,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   openPanelTabs.delete(tabId);
 });
 
-async function handleAIMessage(content, context) {
+async function handleAIMessage(content, context, tabId) {
   const { apiConfig } = await chrome.storage.local.get('apiConfig');
   if (!apiConfig) {
     return { error: 'API not configured. Please set up your API key in settings.' };
   }
 
   try {
-    return await runToolUseLoop(apiConfig, content, context);
+    return await runToolUseLoop(apiConfig, content, context, tabId);
   } catch (error) {
     return { error: error.message };
   }
 }
 
-async function runToolUseLoop(config, userMessage, context) {
+async function runToolUseLoop(config, userMessage, context, tabId) {
   const tools = [
     {
       name: 'click_element',
@@ -80,7 +80,7 @@ async function runToolUseLoop(config, userMessage, context) {
 
     const toolResults = [];
     for (const toolUse of toolUseBlocks) {
-      const result = await executeToolOnPage(toolUse.name, toolUse.input);
+      const result = await executeToolOnPage(toolUse.name, toolUse.input, tabId);
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolUse.id,
@@ -117,12 +117,16 @@ async function callClaude(config, messages, tools, systemPrompt) {
   return await response.json();
 }
 
-async function executeToolOnPage(toolName, toolInput) {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+async function executeToolOnPage(toolName, toolInput, tabId) {
+  // Use the locked tab ID, fall back to active tab if not provided
+  if (!tabId) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tabId = tab.id;
+  }
 
   if (toolName === 'click_element') {
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       func: (sel) => {
         const el = document.querySelector(sel);
         if (el) el.click();
@@ -134,7 +138,7 @@ async function executeToolOnPage(toolName, toolInput) {
 
   if (toolName === 'fill_form') {
     await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId },
       func: (sel, val) => {
         const el = document.querySelector(sel);
         if (el) el.value = val;

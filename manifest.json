@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Sidekick API",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "AI-powered browser sidekick for web page interaction",
   "permissions": [
     "storage",
     "sidePanel",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": [
     "<all_urls>"

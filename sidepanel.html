@@ -10,6 +10,9 @@
     #header h1 { font-size: 14px; font-weight: 600; }
     #settings-btn { background: #333; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
     #settings-btn:hover { background: #444; }
+    #page-info { display: none; padding: 8px 15px; background: #252525; border-bottom: 1px solid #333; gap: 4px; flex-direction: column; }
+    #page-title { font-size: 12px; font-weight: 600; color: #e0e0e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #page-url { font-size: 11px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #messages { flex: 1; overflow-y: auto; padding: 15px; }
     .message { margin-bottom: 12px; padding: 10px 12px; border-radius: 6px; font-size: 13px; line-height: 1.5; }
     .user { background: #0066cc; color: white; margin-left: 40px; }
@@ -28,6 +31,10 @@
   <div id="header">
     <h1>AI Assistant</h1>
     <button id="settings-btn">Settings</button>
+  </div>
+  <div id="page-info">
+    <span id="page-title"></span>
+    <span id="page-url"></span>
   </div>
   <div id="messages"></div>
   <div id="input-area">

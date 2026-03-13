@@ -2,11 +2,15 @@ const messagesDiv = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const settingsBtn = document.getElementById('settings-btn');
+const pageInfo = document.getElementById('page-info');
+const pageTitle = document.getElementById('page-title');
+const pageUrl = document.getElementById('page-url');
 
 let pageContext = null;
+let lockedTabId = null;
 
-// Auto-load page on startup
-getPageContext();
+// Lock to the current tab on startup
+init();
 
 input.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') sendMessage();
@@ -19,18 +23,51 @@ function openSettings() {
   chrome.runtime.openOptionsPage();
 }
 
-async function getPageContext() {
+async function init() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    lockedTabId = tab.id;
+    await getPageContext();
+    // Watch for navigation within the locked tab
+    chrome.tabs.onUpdated.addListener(onTabUpdated);
+  } catch (error) {
+    addMessage('Failed to initialize: ' + error.message, 'error');
+  }
+}
+
+function onTabUpdated(tabId, changeInfo, tab) {
+  if (tabId !== lockedTabId) return;
+  if (changeInfo.status === 'complete') {
+    // Page navigated — refresh context
+    getPageContext();
+  }
+}
+
+async function getPageContext() {
+  if (!lockedTabId) return;
+  try {
     const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
+      target: { tabId: lockedTabId },
       func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 5000) })
     });
+    const isFirstLoad = !pageContext;
     pageContext = result.result;
-    addMessage(`Page loaded: ${pageContext.title}`, 'assistant');
+    updatePageInfoBar();
+    if (isFirstLoad) {
+      addMessage(`Page loaded: ${pageContext.title}`, 'assistant');
+    } else {
+      addMessage(`Page navigated: ${pageContext.title}`, 'assistant');
+    }
   } catch (error) {
     addMessage('Failed to get page: ' + error.message, 'error');
   }
+}
+
+function updatePageInfoBar() {
+  if (!pageContext) return;
+  pageTitle.textContent = pageContext.title || 'Untitled';
+  pageUrl.textContent = pageContext.url;
+  pageInfo.style.display = 'flex';
 }
 
 async function sendMessage() {
@@ -45,7 +82,8 @@ async function sendMessage() {
     const response = await chrome.runtime.sendMessage({
       type: 'SEND_MESSAGE',
       content,
-      context: pageContext
+      context: pageContext,
+      tabId: lockedTabId
     });
 
     if (response.error) {
