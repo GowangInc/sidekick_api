@@ -78,32 +78,34 @@ Place commands on their own line in your response:
 
 - For questions about the page, just answer normally — no commands needed.
 - When asked to interact, explain briefly what you'll do, then use commands.
-- After clicking a link or button that causes navigation, use [WAIT: 1000] to let the page load.
+- After you execute commands, you will automatically receive the updated page content. Use it to continue the task or answer the user's question.
 - Use [READ: selector] to extract specific data from elements.
 - For forms, prefer [TYPE: ...] over [FILL: ...] for dynamic/React-based pages.
 - You can chain multiple commands in one response for multi-step tasks.
-- You have conversation memory — you remember what you've done and seen before in this session.`;
+- You have conversation memory — you remember what you've done and seen before in this session.
+- IMPORTANT: When you navigate or click and get updated page content, immediately analyze it and respond with the information the user asked for. Do NOT ask the user to wait or confirm — you already have the new page data.`;
 
 async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
-  // Build text with page context
+  // Get or create conversation history for this tab
+  if (!conversationHistory.has(tabId)) {
+    conversationHistory.set(tabId, []);
+  }
+  const history = conversationHistory.get(tabId);
+
+  // Build first user message with page context
   let textContent = userMessage;
   if (context) {
     textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 3000)}\n\nUser Request: ${userMessage}`;
   }
 
-  // Build the user message content — with or without screenshot
+  // Build message content — with or without screenshot
   const useVision = screenshot && visionSupported;
   let messageContent;
-
   if (useVision) {
     messageContent = [
       {
         type: 'image',
-        source: {
-          type: 'base64',
-          media_type: 'image/png',
-          data: screenshot
-        }
+        source: { type: 'base64', media_type: 'image/png', data: screenshot }
       },
       { type: 'text', text: textContent }
     ];
@@ -111,55 +113,83 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
     messageContent = textContent;
   }
 
-  // Get or create conversation history for this tab
-  if (!conversationHistory.has(tabId)) {
-    conversationHistory.set(tabId, []);
-  }
-  const history = conversationHistory.get(tabId);
-
-  // Add user message to history
   history.push({ role: 'user', content: messageContent });
 
-  // Keep history manageable (last 20 messages)
+  // Keep history manageable
   while (history.length > 20) {
     history.shift();
   }
 
-  let response;
-  try {
-    response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
-  } catch (error) {
-    // If vision caused the error, retry with plain string
-    if (useVision && error.message.includes('400')) {
-      visionSupported = false;
-      // Replace the last message with text-only version
-      history[history.length - 1] = { role: 'user', content: textContent };
+  // Action loop: AI responds → execute commands → get new page → AI continues
+  const allActionResults = [];
+  let finalText = '';
+  const MAX_TURNS = 5;
+
+  for (let turn = 0; turn < MAX_TURNS; turn++) {
+    let response;
+    try {
       response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
-    } else {
-      throw error;
+    } catch (error) {
+      // Vision fallback on first turn
+      if (turn === 0 && useVision && error.message.includes('400')) {
+        visionSupported = false;
+        history[history.length - 1] = { role: 'user', content: textContent };
+        response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
+      } else {
+        throw error;
+      }
+    }
+
+    const textBlock = response.content.find(b => b.type === 'text');
+    const text = textBlock ? textBlock.text : 'Done';
+    finalText = text;
+
+    history.push({ role: 'assistant', content: text });
+
+    // Parse and execute commands
+    const actionResults = await parseAndExecuteCommands(text, tabId);
+    allActionResults.push(...actionResults);
+
+    // If no commands, we're done — AI gave a final answer
+    if (actionResults.length === 0) break;
+
+    // Commands were executed — wait for page to settle, then get fresh context
+    await new Promise(r => setTimeout(r, 1500));
+
+    const freshContext = await getPageContextFromTab(tabId);
+    const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
+
+    let followUp = `[Action results]\n${resultSummary}`;
+    if (freshContext) {
+      followUp += `\n\n[Updated page]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nContent:\n${freshContext.text.slice(0, 3000)}`;
+    }
+    followUp += '\n\nPlease continue — describe what you see or take the next action.';
+
+    history.push({ role: 'user', content: followUp });
+
+    while (history.length > 20) {
+      history.shift();
     }
   }
 
-  const textBlock = response.content.find(b => b.type === 'text');
-  const text = textBlock ? textBlock.text : 'Done';
-
-  // Add assistant response to history
-  history.push({ role: 'assistant', content: text });
-
-  // Parse and execute any commands in the response
-  const actionResults = await parseAndExecuteCommands(text, tabId);
-
-  // If commands were executed, add results to history for next turn
-  if (actionResults.length > 0) {
-    const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
-    history.push({ role: 'user', content: `[Action results]\n${resultSummary}` });
-  }
-
   return {
-    content: text,
-    commandsExecuted: actionResults.length > 0,
-    actionResults
+    content: finalText,
+    commandsExecuted: allActionResults.length > 0,
+    actionResults: allActionResults
   };
+}
+
+// Fetch page context directly from the background (no sidepanel needed)
+async function getPageContextFromTab(tabId) {
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 5000) })
+    });
+    return result.result;
+  } catch {
+    return null;
+  }
 }
 
 async function parseAndExecuteCommands(text, tabId) {
