@@ -14,14 +14,14 @@ const conversationHistory = new Map();
 const activePorts = new Map();
 
 // Handle action click manually: enable panel for this tab, then open it
-chrome.action.onClicked.addListener(async (tab) => {
+chrome.action.onClicked.addListener((tab) => {
   openPanelTabs.add(tab.id);
-  await chrome.sidePanel.setOptions({
+  chrome.sidePanel.setOptions({
     tabId: tab.id,
     path: 'sidepanel.html',
     enabled: true
   });
-  await chrome.sidePanel.open({ tabId: tab.id });
+  chrome.sidePanel.open({ tabId: tab.id });
 });
 
 // Clean up when tabs are closed
@@ -104,7 +104,16 @@ Place commands on their own line in your response:
 - For forms, prefer [TYPE: ...] over [FILL: ...] for dynamic/React-based pages.
 - You can chain multiple commands in one response for multi-step tasks.
 - You have conversation memory — you remember what you've done and seen before in this session.
-- CRITICAL: After commands execute, you WILL receive the fresh page content automatically. You MUST analyze it and give a complete answer. NEVER say "the page should be loading" or "let me know what you see" — you can see the page yourself in the content provided to you.`;
+- CRITICAL: After commands execute, you WILL receive the fresh page content automatically. You MUST analyze it and give a complete answer. NEVER say "the page should be loading" or "let me know what you see" — you can see the page yourself in the content provided to you.
+
+## Response Format
+
+- Use markdown formatting: **bold**, *italic*, bullet lists, numbered lists, headings.
+- Be concise but thorough — give detailed information without unnecessary filler.
+- Use bullet points or numbered lists to organize information clearly.
+- Keep paragraphs short (2-3 sentences max).
+- When listing items (repos, links, data), use a structured format.
+- No need for greetings, sign-offs, or filler phrases like "Sure!" or "Great question!".`;
 
 async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Get or create conversation history for this tab
@@ -165,16 +174,21 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 
     const textBlock = response.content.find(b => b.type === 'text');
     const text = textBlock ? textBlock.text : 'Done';
-    allResponses.push(text);
 
     history.push({ role: 'assistant', content: text });
+
+    // Capture URL before executing any commands (for SPA detection)
+    const urlBeforeAction = await getTabUrl(tabId);
 
     // Parse and execute commands
     const actionResults = await parseAndExecuteCommands(text, tabId);
     allActionResults.push(...actionResults);
 
     // If no commands, we're done — AI gave a final answer
-    if (actionResults.length === 0) break;
+    if (actionResults.length === 0) {
+      allResponses.push(text);
+      break;
+    }
 
     // Send action status to sidepanel
     sendStatus(tabId, 'acting', {
@@ -182,30 +196,30 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
       turn
     });
 
-    // Determine if navigation happened (CLICK or NAVIGATE)
-    const hasNavigation = actionResults.some(r =>
-      r.command.startsWith('NAVIGATE:') ||
-      (r.command.startsWith('CLICK:') && !r.result.includes('not found'))
-    );
+    // Determine if navigation is expected (only NAVIGATE commands)
+    const expectsNavigation = actionResults.some(r => r.command.startsWith('NAVIGATE:'));
 
-    if (hasNavigation) {
-      sendStatus(tabId, 'waiting', { message: 'Waiting for page to load...' });
-      await waitForPageLoad(tabId, 10000);
-    } else {
-      // Non-navigation action — short delay
-      await new Promise(r => setTimeout(r, 1000));
-    }
+    // Wait for the page to actually update, then verify content is stable
+    sendStatus(tabId, 'waiting', { message: 'Waiting for page to update...' });
+    await waitForPageUpdate(tabId, urlBeforeAction, expectsNavigation);
 
     sendStatus(tabId, 'reading', { message: 'Reading updated page...' });
     const freshContext = await getPageContextFromTab(tabId);
     const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
 
+    console.log('[Loop] Fresh context after action:', {
+      title: freshContext?.title,
+      url: freshContext?.url,
+      textLength: freshContext?.text?.length
+    });
+
     let followUp = `[Action results]\n${resultSummary}`;
     if (freshContext) {
-      followUp += `\n\n[Updated page - you MUST use this content to answer]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nFull Page Content:\n${freshContext.text.slice(0, 10000)}`;
+      followUp += `\n\n[Updated page content — this is what is currently displayed]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nFull Page Content:\n${freshContext.text.slice(0, 10000)}`;
     }
-    followUp += '\n\nNow analyze the page content above and provide the answer the user originally asked for. Do NOT say the page is loading — you have the full content above.';
+    followUp += '\n\nIMPORTANT: The page content above is LIVE and CURRENT. Read it carefully and answer the user\'s original question using this content. Do NOT say the page is loading or ask the user what they see.';
 
+    console.log('[Loop] Sending follow-up to AI, length:', followUp.length);
     history.push({ role: 'user', content: followUp });
 
     while (history.length > 20) {
@@ -220,46 +234,100 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   };
 }
 
-// Wait for a tab to finish loading after navigation
-async function waitForPageLoad(tabId, timeoutMs = 10000) {
-  return new Promise((resolve) => {
-    let settled = false;
+// Get current tab URL
+async function getTabUrl(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return tab.url;
+  } catch { return null; }
+}
 
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      chrome.tabs.onUpdated.removeListener(listener);
-      clearTimeout(fallbackTimeout);
-      // Extra delay for JS rendering
-      setTimeout(resolve, 2000);
-    };
+// Wait for page to update after actions — handles both full navigation and SPA
+async function waitForPageUpdate(tabId, previousUrl, expectsNavigation) {
+  if (!expectsNavigation) {
+    // No navigation expected — just a short delay for DOM updates
+    await new Promise(r => setTimeout(r, 1000));
+    return;
+  }
 
-    // Fallback timeout — if nothing happens, resolve anyway
-    const fallbackTimeout = setTimeout(finish, timeoutMs);
+  console.log('[waitForPageUpdate] Starting — previousUrl:', previousUrl);
 
-    let sawLoading = false;
+  // Phase 1: Wait for URL to change OR tab to start loading (max 5s)
+  // This catches both SPA (pushState URL change) and full navigation (loading status)
+  const phase1Start = Date.now();
+  let urlChanged = false;
+  let fullNavStarted = false;
 
-    function listener(updatedTabId, changeInfo) {
-      if (updatedTabId !== tabId) return;
-
-      if (changeInfo.status === 'loading') {
-        sawLoading = true;
+  while (Date.now() - phase1Start < 5000) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.url !== previousUrl) {
+        urlChanged = true;
+        console.log('[waitForPageUpdate] Phase 1: URL changed to', tab.url, `(${Date.now() - phase1Start}ms)`);
+        break;
       }
-
-      if (sawLoading && changeInfo.status === 'complete') {
-        finish();
-      }
-    }
-
-    chrome.tabs.onUpdated.addListener(listener);
-
-    // If the page is already navigating, check current status
-    chrome.tabs.get(tabId).then(tab => {
       if (tab.status === 'loading') {
-        sawLoading = true;
+        fullNavStarted = true;
+        console.log('[waitForPageUpdate] Phase 1: Full navigation detected', `(${Date.now() - phase1Start}ms)`);
+        break;
       }
-    }).catch(() => {});
-  });
+    } catch {}
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  if (!urlChanged && !fullNavStarted) {
+    console.log('[waitForPageUpdate] Phase 1: No URL change or loading detected after 5s');
+  }
+
+  // Phase 2: If full navigation started, wait for it to complete (max 10s)
+  if (fullNavStarted) {
+    console.log('[waitForPageUpdate] Phase 2: Waiting for page complete...');
+    const phase2Start = Date.now();
+    while (Date.now() - phase2Start < 10000) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab.status === 'complete') {
+          console.log('[waitForPageUpdate] Phase 2: Page complete', `(${Date.now() - phase2Start}ms)`);
+          break;
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 300));
+    }
+    // Extra delay for JS framework rendering after load
+    await new Promise(r => setTimeout(r, 1500));
+  }
+
+  // Phase 3: Wait for DOM content to stabilize (content length stops changing)
+  // This is the key check — it works for ALL navigation types
+  console.log('[waitForPageUpdate] Phase 3: Checking DOM stability...');
+  let lastTextLength = 0;
+  let stableChecks = 0;
+  const phase3Start = Date.now();
+
+  while (Date.now() - phase3Start < 8000) {
+    try {
+      const ctx = await getPageContextFromTab(tabId);
+      const len = ctx?.text?.length || 0;
+
+      if (len > 100 && len === lastTextLength) {
+        stableChecks++;
+        if (stableChecks >= 3) {
+          console.log('[waitForPageUpdate] Phase 3: DOM stable at', len, 'chars after', stableChecks, `checks (${Date.now() - phase3Start}ms)`);
+          break;
+        }
+      } else {
+        stableChecks = 0;
+      }
+      lastTextLength = len;
+    } catch {}
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  if (stableChecks < 3) {
+    console.log('[waitForPageUpdate] Phase 3: Timed out — last content length:', lastTextLength);
+  }
+
+  console.log('[waitForPageUpdate] Done — total time:', Date.now() - phase1Start, 'ms');
 }
 
 // Fetch page context directly from the background
@@ -488,10 +556,12 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
     }
   ];
 
-  let messages = [{ role: 'user', content: userMessage }];
-  if (context) {
-    messages[0].content = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 10000)}\n\nUser Request: ${userMessage}`;
+  let messageContent = userMessage;
+  if (context && context.text) {
+    messageContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 10000)}\n\nUser Request: ${userMessage}`;
   }
+
+  let messages = [{ role: 'user', content: messageContent }];
 
   while (true) {
     const response = await callAPI(config, messages, tools, SYSTEM_PROMPT_TOOLS);
@@ -531,6 +601,13 @@ async function callAPI(config, messages, tools, systemPrompt) {
     body.tools = tools;
   }
 
+  console.log('[API] Sending request:', {
+    model: body.model,
+    messageCount: messages.length,
+    hasTools: !!tools,
+    lastMessage: messages[messages.length - 1]
+  });
+
   const response = await fetch(`${config.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -543,6 +620,7 @@ async function callAPI(config, messages, tools, systemPrompt) {
 
   if (!response.ok) {
     const text = await response.text();
+    console.error('[API] Error response:', text);
     throw new Error(`API error ${response.status}: ${text}`);
   }
 

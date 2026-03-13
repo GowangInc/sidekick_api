@@ -10,6 +10,14 @@
     #header h1 { font-size: 14px; font-weight: 600; }
     #settings-btn { background: #333; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
     #settings-btn:hover { background: #444; }
+    #settings-panel { display: none; background: #252525; padding: 15px; border-bottom: 1px solid #333; }
+    #settings-panel label { display: block; margin: 10px 0 5px; font-size: 12px; color: #e0e0e0; font-weight: 500; }
+    #settings-panel input, #settings-panel select { width: 100%; padding: 6px; border: 1px solid #444; border-radius: 4px; box-sizing: border-box; background: #1a1a1a; color: #e0e0e0; font-size: 12px; }
+    #settings-panel button { width: 100%; padding: 8px; margin-top: 10px; background: #0066cc; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+    #settings-panel button:hover { background: #0052a3; }
+    #settings-panel .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+    #settings-panel .checkbox-row input { width: auto; }
+    #settings-panel .checkbox-row label { margin: 0; cursor: pointer; }
     #page-info { display: none; padding: 8px 15px; background: #252525; border-bottom: 1px solid #333; gap: 4px; flex-direction: column; }
     #page-info-row { display: flex; align-items: center; gap: 8px; }
     #page-info-text { flex: 1; min-width: 0; }
@@ -37,12 +45,47 @@
     #getPage { background: #28a745; }
     #getPage:hover { background: #218838; }
     #send:hover { background: #0052a3; }
+
+    /* Markdown rendering in assistant messages */
+    .assistant h2, .assistant h3, .assistant h4 { margin: 8px 0 4px; }
+    .assistant h2 { font-size: 15px; }
+    .assistant h3 { font-size: 14px; }
+    .assistant h4 { font-size: 13px; font-weight: 600; }
+    .assistant p { margin: 4px 0; }
+    .assistant ul, .assistant ol { margin: 4px 0 4px 20px; }
+    .assistant li { margin: 2px 0; }
+    .assistant strong { font-weight: 600; }
+    .assistant code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; font-size: 12px; font-family: 'SF Mono', 'Consolas', monospace; }
+    .assistant pre { background: #1e1e1e; color: #d4d4d4; padding: 8px 10px; border-radius: 4px; overflow-x: auto; margin: 6px 0; }
+    .assistant pre code { background: none; color: inherit; padding: 0; font-size: 12px; }
+    .assistant hr { border: none; border-top: 1px solid #e0e0e0; margin: 8px 0; }
+    .assistant a { color: #0066cc; text-decoration: none; }
+    .assistant a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
   <div id="header">
     <h1>AI Assistant</h1>
     <button id="settings-btn">Settings</button>
+  </div>
+  <div id="settings-panel">
+    <label>Provider</label>
+    <select id="provider">
+      <option value="anthropic">Anthropic</option>
+      <option value="openai">OpenAI</option>
+      <option value="custom">Custom</option>
+    </select>
+    <label>Base URL</label>
+    <input type="text" id="baseUrl" placeholder="https://api.anthropic.com">
+    <label>API Key</label>
+    <input type="password" id="apiKey" placeholder="Enter your API key">
+    <label>Model</label>
+    <input type="text" id="model" placeholder="claude-sonnet-4-5">
+    <div class="checkbox-row">
+      <input type="checkbox" id="toolUse">
+      <label for="toolUse">Enable Tool Use</label>
+    </div>
+    <button id="save-settings">Save Settings</button>
   </div>
   <div id="page-info">
     <div id="page-info-row">

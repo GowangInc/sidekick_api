@@ -2,6 +2,8 @@ const messagesDiv = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const settingsBtn = document.getElementById('settings-btn');
+const settingsPanel = document.getElementById('settings-panel');
+const saveSettingsBtn = document.getElementById('save-settings');
 const pageInfo = document.getElementById('page-info');
 const pageTitle = document.getElementById('page-title');
 const pageUrl = document.getElementById('page-url');
@@ -21,14 +23,40 @@ input.addEventListener('keypress', (e) => {
 });
 
 sendBtn.addEventListener('click', sendMessage);
-settingsBtn.addEventListener('click', openSettings);
+settingsBtn.addEventListener('click', toggleSettings);
+saveSettingsBtn.addEventListener('click', saveSettings);
 refreshBtn.addEventListener('click', async () => {
   await refreshContext();
   addMessage('Context refreshed', 'assistant');
 });
 
-function openSettings() {
-  chrome.runtime.openOptionsPage();
+function toggleSettings() {
+  settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
+  if (settingsPanel.style.display === 'block') loadSettings();
+}
+
+async function loadSettings() {
+  const { apiConfig } = await chrome.storage.local.get('apiConfig');
+  if (apiConfig) {
+    document.getElementById('provider').value = apiConfig.provider || 'anthropic';
+    document.getElementById('baseUrl').value = apiConfig.baseUrl || '';
+    document.getElementById('apiKey').value = apiConfig.apiKey || '';
+    document.getElementById('model').value = apiConfig.model || '';
+    document.getElementById('toolUse').checked = apiConfig.toolUse || false;
+  }
+}
+
+async function saveSettings() {
+  const apiConfig = {
+    provider: document.getElementById('provider').value,
+    baseUrl: document.getElementById('baseUrl').value,
+    apiKey: document.getElementById('apiKey').value,
+    model: document.getElementById('model').value,
+    toolUse: document.getElementById('toolUse').checked
+  };
+  await chrome.storage.local.set({ apiConfig });
+  settingsPanel.style.display = 'none';
+  addMessage('Settings saved', 'assistant');
 }
 
 async function init() {
@@ -196,7 +224,66 @@ async function sendMessage() {
 function addMessage(content, type) {
   const div = document.createElement('div');
   div.className = `message ${type}`;
-  div.textContent = content;
+  if (type === 'assistant') {
+    div.innerHTML = renderMarkdown(content);
+  } else {
+    div.textContent = content;
+  }
   messagesDiv.appendChild(div);
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+// ── Lightweight markdown renderer ──
+
+function renderMarkdown(text) {
+  // Sanitize HTML entities first
+  text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Code blocks (``` ... ```)
+  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre><code>${code.trim()}</code></pre>`;
+  });
+
+  // Inline code
+  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Headings (###, ##, #)
+  text = text.replace(/^### (.+)$/gm, '<h4>$1</h4>');
+  text = text.replace(/^## (.+)$/gm, '<h3>$1</h3>');
+  text = text.replace(/^# (.+)$/gm, '<h2>$1</h2>');
+
+  // Bold and italic
+  text = text.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Horizontal rule
+  text = text.replace(/^---$/gm, '<hr>');
+
+  // Unordered lists — collect consecutive lines
+  text = text.replace(/^([ \t]*[-*] .+(\n|$))+/gm, (block) => {
+    const items = block.trim().split('\n').map(line => {
+      return '<li>' + line.replace(/^[ \t]*[-*] /, '') + '</li>';
+    }).join('');
+    return '<ul>' + items + '</ul>';
+  });
+
+  // Ordered lists
+  text = text.replace(/^(\d+\. .+(\n|$))+/gm, (block) => {
+    const items = block.trim().split('\n').map(line => {
+      return '<li>' + line.replace(/^\d+\. /, '') + '</li>';
+    }).join('');
+    return '<ol>' + items + '</ol>';
+  });
+
+  // Links [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // Paragraphs — wrap remaining loose text lines
+  text = text.replace(/^(?!<[a-z])((?!<\/?(ul|ol|li|h[2-4]|pre|hr|blockquote)[ >]).+)$/gm, '<p>$1</p>');
+
+  // Clean up empty paragraphs
+  text = text.replace(/<p>\s*<\/p>/g, '');
+
+  return text;
 }
