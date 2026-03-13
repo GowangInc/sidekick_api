@@ -123,7 +123,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Action loop: AI responds → execute commands → get new page → AI continues
   const allActionResults = [];
   let finalText = '';
-  const MAX_TURNS = 5;
+  const MAX_TURNS = 25;
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     let response;
@@ -154,7 +154,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
     if (actionResults.length === 0) break;
 
     // Commands were executed — wait for page to settle, then get fresh context
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 4000));
 
     const freshContext = await getPageContextFromTab(tabId);
     const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
