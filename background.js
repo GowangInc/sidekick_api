@@ -44,9 +44,7 @@ async function handleAIMessage(content, context, screenshot, tabId) {
       return await runSimpleChat(apiConfig, content, context, screenshot, tabId);
     }
   } catch (error) {
-    // Show debug info in the error so user can report it
-    const debug = `[model: ${apiConfig.model}, url: ${apiConfig.baseUrl}, toolUse: ${apiConfig.toolUse}]`;
-    return { error: `${error.message}\n\nDebug: ${debug}` };
+    return { error: error.message };
   }
 }
 
@@ -76,19 +74,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Only use plain string — screenshot support can be enabled later
   const messages = [{ role: 'user', content: textContent }];
 
-  console.log('[Sidekick] Sending simple chat:', {
-    model: config.model,
-    contentLength: textContent.length,
-    hasScreenshot: !!screenshot
-  });
-
-  let response;
-  try {
-    response = await callAPI(config, messages, null, SYSTEM_PROMPT_SIMPLE);
-  } catch (error) {
-    console.error('[Sidekick] API call failed:', error.message);
-    throw error;
-  }
+  const response = await callAPI(config, messages, null, SYSTEM_PROMPT_SIMPLE);
 
   const textBlock = response.content.find(b => b.type === 'text');
   const text = textBlock ? textBlock.text : 'Done';
@@ -195,16 +181,6 @@ async function callAPI(config, messages, tools, systemPrompt) {
     body.tools = tools;
   }
 
-  const jsonBody = JSON.stringify(body);
-  console.log('[Sidekick] API request:', {
-    url: `${config.baseUrl}/v1/messages`,
-    model: body.model,
-    hasSystem: !!systemPrompt,
-    hasTools: !!tools,
-    bodySize: jsonBody.length,
-    contentType: typeof messages[0]?.content
-  });
-
   const response = await fetch(`${config.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -212,12 +188,11 @@ async function callAPI(config, messages, tools, systemPrompt) {
       'x-api-key': config.apiKey,
       'anthropic-version': '2023-06-01'
     },
-    body: jsonBody
+    body: JSON.stringify(body)
   });
 
   if (!response.ok) {
     const text = await response.text();
-    console.error('[Sidekick] API error response:', text);
     throw new Error(`API error ${response.status}: ${text}`);
   }
 
