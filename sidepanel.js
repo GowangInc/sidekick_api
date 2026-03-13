@@ -62,7 +62,7 @@ async function getPageContext() {
   try {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: lockedTabId },
-      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 5000) })
+      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 15000) })
     });
     pageContext = result.result;
   } catch (error) {

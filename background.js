@@ -95,7 +95,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Build first user message with page context
   let textContent = userMessage;
   if (context) {
-    textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 3000)}\n\nUser Request: ${userMessage}`;
+    textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 10000)}\n\nUser Request: ${userMessage}`;
   }
 
   // Build message content — with or without screenshot
@@ -161,7 +161,7 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 
     let followUp = `[Action results]\n${resultSummary}`;
     if (freshContext) {
-      followUp += `\n\n[Updated page]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nContent:\n${freshContext.text.slice(0, 3000)}`;
+      followUp += `\n\n[Updated page]\nTitle: ${freshContext.title}\nURL: ${freshContext.url}\n\nContent:\n${freshContext.text.slice(0, 10000)}`;
     }
     followUp += '\n\nPlease continue — describe what you see or take the next action.';
 
@@ -184,7 +184,7 @@ async function getPageContextFromTab(tabId) {
   try {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 5000) })
+      func: () => ({ title: document.title, url: location.href, text: document.body.innerText.slice(0, 15000) })
     });
     return result.result;
   } catch {
@@ -419,7 +419,7 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
 
   let messages = [{ role: 'user', content: userMessage }];
   if (context) {
-    messages[0].content = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 3000)}\n\nUser Request: ${userMessage}`;
+    messages[0].content = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 10000)}\n\nUser Request: ${userMessage}`;
   }
 
   while (true) {
