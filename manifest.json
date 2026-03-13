@@ -18,9 +18,6 @@
   "action": {
     "default_icon": "favicon.ico"
   },
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
   "options_page": "popup.html",
   "content_scripts": [
     {
