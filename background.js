@@ -180,35 +180,42 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 }
 
 // Wait for a tab to finish loading (or timeout)
-async function waitForPageLoad(tabId, timeoutMs = 8000) {
-  // First give a small initial delay for navigation to start
-  await new Promise(r => setTimeout(r, 500));
+async function waitForPageLoad(tabId, timeoutMs = 10000) {
+  // Record the current URL so we can detect navigation
+  let currentUrl;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    currentUrl = tab.url;
+  } catch {
+    currentUrl = '';
+  }
 
   return new Promise((resolve) => {
+    let navigationStarted = false;
+
     const timeout = setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
     }, timeoutMs);
 
-    function listener(updatedTabId, changeInfo) {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+    function listener(updatedTabId, changeInfo, tab) {
+      if (updatedTabId !== tabId) return;
+
+      // Detect that navigation has started (URL changed or loading started)
+      if (changeInfo.url || changeInfo.status === 'loading') {
+        navigationStarted = true;
+      }
+
+      // Wait for navigation to complete
+      if (navigationStarted && changeInfo.status === 'complete') {
         clearTimeout(timeout);
         chrome.tabs.onUpdated.removeListener(listener);
-        // Extra delay for JS-rendered content (React, etc.)
-        setTimeout(resolve, 1000);
+        // Extra delay for JS-rendered content
+        setTimeout(resolve, 1500);
       }
     }
 
-    // Check if already loaded
-    chrome.tabs.get(tabId).then(tab => {
-      if (tab.status === 'complete') {
-        clearTimeout(timeout);
-        // Still wait a bit for dynamic content
-        setTimeout(resolve, 2000);
-      } else {
-        chrome.tabs.onUpdated.addListener(listener);
-      }
-    });
+    chrome.tabs.onUpdated.addListener(listener);
   });
 }
 
