@@ -23,7 +23,9 @@
       "128": "icon128.png"
     }
   },
-  "side_panel": {},
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "options_page": "popup.html",
   "content_scripts": [
     {
