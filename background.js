@@ -1,32 +1,30 @@
-// Disable side panel globally by default — only enabled per-tab on click
+// Disable side panel globally — only enabled per-tab on click
 chrome.sidePanel.setOptions({ enabled: false });
-chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
-  .catch((error) => console.error(error));
+
+// Track which tabs have the panel open
+const openPanelTabs = new Set();
+
+// Handle action click manually: enable panel for this tab, then open it
+chrome.action.onClicked.addListener(async (tab) => {
+  openPanelTabs.add(tab.id);
+  await chrome.sidePanel.setOptions({
+    tabId: tab.id,
+    path: 'sidepanel.html',
+    enabled: true
+  });
+  await chrome.sidePanel.open({ tabId: tab.id });
+});
+
+// Clean up when tabs are closed
+chrome.tabs.onRemoved.addListener((tabId) => {
+  openPanelTabs.delete(tabId);
+});
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_MESSAGE') {
     handleAIMessage(message.content, message.context, message.tabId).then(sendResponse);
     return true;
   }
-});
-
-// Track which tabs have the panel open
-const openPanelTabs = new Set();
-
-chrome.action.onClicked.addListener(async (tab) => {
-  openPanelTabs.add(tab.id);
-  // Enable the side panel only for this specific tab
-  await chrome.sidePanel.setOptions({
-    tabId: tab.id,
-    path: 'sidepanel.html',
-    enabled: true
-  });
-});
-
-// Clean up when tabs are closed
-chrome.tabs.onRemoved.addListener((tabId) => {
-  openPanelTabs.delete(tabId);
 });
 
 async function handleAIMessage(content, context, tabId) {
@@ -118,7 +116,8 @@ async function callClaude(config, messages, tools, systemPrompt) {
   });
 
   if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+    const body = await response.text();
+    throw new Error(`API error ${response.status}: ${body}`);
   }
 
   return await response.json();
