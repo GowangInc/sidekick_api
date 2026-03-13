@@ -50,7 +50,7 @@ A Chrome extension that provides an AI-powered browser sidekick for web page int
 
 ## Version
 
-Current: 1.4.6
+Current: 1.5.0
 
 
 

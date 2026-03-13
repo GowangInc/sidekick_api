@@ -1,3 +1,8 @@
+// Allow opening side panel by clicking the action icon
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error(error));
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_MESSAGE') {
     handleAIMessage(message.content, message.context).then(sendResponse);
@@ -10,7 +15,6 @@ const openPanelTabs = new Set();
 
 chrome.action.onClicked.addListener((tab) => {
   openPanelTabs.add(tab.id);
-  chrome.sidePanel.open({ tabId: tab.id });
 });
 
 // Clean up when tabs are closed
