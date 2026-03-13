@@ -1,4 +1,5 @@
-// Allow opening side panel by clicking the action icon
+// Disable side panel globally by default — only enabled per-tab on click
+chrome.sidePanel.setOptions({ enabled: false });
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error));
@@ -13,8 +14,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Track which tabs have the panel open
 const openPanelTabs = new Set();
 
-chrome.action.onClicked.addListener((tab) => {
+chrome.action.onClicked.addListener(async (tab) => {
   openPanelTabs.add(tab.id);
+  // Enable the side panel only for this specific tab
+  await chrome.sidePanel.setOptions({
+    tabId: tab.id,
+    path: 'sidepanel.html',
+    enabled: true
+  });
 });
 
 // Clean up when tabs are closed
