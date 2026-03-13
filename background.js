@@ -44,7 +44,9 @@ async function handleAIMessage(content, context, screenshot, tabId) {
       return await runSimpleChat(apiConfig, content, context, screenshot, tabId);
     }
   } catch (error) {
-    return { error: error.message };
+    // Show debug info in the error so user can report it
+    const debug = `[model: ${apiConfig.model}, url: ${apiConfig.baseUrl}, toolUse: ${apiConfig.toolUse}]`;
+    return { error: `${error.message}\n\nDebug: ${debug}` };
   }
 }
 
