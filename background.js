@@ -13,6 +13,18 @@ const conversationHistory = new Map();
 // Active ports from sidepanels (for streaming status updates)
 const activePorts = new Map();
 
+// Screenshot counter per tab
+const screenshotCounters = new Map();
+
+async function saveScreenshot(tabId, url, dataUrl) {
+  const domain = new URL(url).hostname.replace(/[^a-z0-9]/gi, '_');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+  const counter = (screenshotCounters.get(tabId) || 0) + 1;
+  screenshotCounters.set(tabId, counter);
+  const filename = `Sidekick_Screenshots/${domain}/${timestamp}_${counter}.png`;
+  await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
+}
+
 // Handle action click manually: enable panel for this tab, then open it
 chrome.action.onClicked.addListener((tab) => {
   openPanelTabs.add(tab.id);
@@ -383,7 +395,8 @@ async function parseAndExecuteCommands(text, tabId) {
           try {
             const tab = await chrome.tabs.get(tabId);
             const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-            result = 'Screenshot captured';
+            await saveScreenshot(tabId, tab.url, dataUrl);
+            result = 'Screenshot saved';
           } catch (error) {
             result = 'Failed to capture screenshot: ' + error.message;
           }

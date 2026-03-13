@@ -1,6 +1,7 @@
 const messagesDiv = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
+const exportBtn = document.getElementById('export-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsPanel = document.getElementById('settings-panel');
 const saveSettingsBtn = document.getElementById('save-settings');
@@ -23,6 +24,7 @@ input.addEventListener('keypress', (e) => {
 });
 
 sendBtn.addEventListener('click', sendMessage);
+exportBtn.addEventListener('click', exportConversation);
 settingsBtn.addEventListener('click', toggleSettings);
 saveSettingsBtn.addEventListener('click', saveSettings);
 refreshBtn.addEventListener('click', async () => {
@@ -33,6 +35,25 @@ refreshBtn.addEventListener('click', async () => {
 function toggleSettings() {
   settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
   if (settingsPanel.style.display === 'block') loadSettings();
+}
+
+function exportConversation() {
+  const messages = Array.from(messagesDiv.querySelectorAll('.message'));
+  let markdown = `# Conversation Export\n\n**Page:** ${pageContext?.title || 'Unknown'}\n**URL:** ${pageContext?.url || 'Unknown'}\n**Date:** ${new Date().toLocaleString()}\n\n---\n\n`;
+
+  messages.forEach(msg => {
+    const type = msg.classList.contains('user') ? 'User' : msg.classList.contains('assistant') ? 'Assistant' : 'System';
+    const content = msg.textContent.trim();
+    markdown += `### ${type}\n\n${content}\n\n`;
+  });
+
+  const blob = new Blob([markdown], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `conversation_${Date.now()}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function loadSettings() {
