@@ -71,42 +71,21 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
     textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 3000)}\n\nUser Request: ${userMessage}`;
   }
 
-  // Use array format with image block only when sending a screenshot,
-  // otherwise use plain string (some APIs don't support content arrays)
-  const useVision = screenshot && visionSupported;
-  let messageContent;
+  // Only use plain string — screenshot support can be enabled later
+  const messages = [{ role: 'user', content: textContent }];
 
-  if (useVision) {
-    messageContent = [
-      {
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: 'image/png',
-          data: screenshot
-        }
-      },
-      { type: 'text', text: textContent }
-    ];
-  } else {
-    messageContent = textContent;
-  }
-
-  const messages = [{ role: 'user', content: messageContent }];
+  console.log('[Sidekick] Sending simple chat:', {
+    model: config.model,
+    contentLength: textContent.length,
+    hasScreenshot: !!screenshot
+  });
 
   let response;
   try {
     response = await callAPI(config, messages, null, SYSTEM_PROMPT_SIMPLE);
   } catch (error) {
-    // If vision caused the error, retry with plain string
-    if (useVision && error.message.includes('400')) {
-      visionSupported = false;
-      console.log('Vision not supported by API, falling back to text-only');
-      const retryMessages = [{ role: 'user', content: textContent }];
-      response = await callAPI(config, retryMessages, null, SYSTEM_PROMPT_SIMPLE);
-    } else {
-      throw error;
-    }
+    console.error('[Sidekick] API call failed:', error.message);
+    throw error;
   }
 
   const textBlock = response.content.find(b => b.type === 'text');
@@ -214,6 +193,16 @@ async function callAPI(config, messages, tools, systemPrompt) {
     body.tools = tools;
   }
 
+  const jsonBody = JSON.stringify(body);
+  console.log('[Sidekick] API request:', {
+    url: `${config.baseUrl}/v1/messages`,
+    model: body.model,
+    hasSystem: !!systemPrompt,
+    hasTools: !!tools,
+    bodySize: jsonBody.length,
+    contentType: typeof messages[0]?.content
+  });
+
   const response = await fetch(`${config.baseUrl}/v1/messages`, {
     method: 'POST',
     headers: {
@@ -221,11 +210,12 @@ async function callAPI(config, messages, tools, systemPrompt) {
       'x-api-key': config.apiKey,
       'anthropic-version': '2023-06-01'
     },
-    body: JSON.stringify(body)
+    body: jsonBody
   });
 
   if (!response.ok) {
     const text = await response.text();
+    console.error('[Sidekick] API error response:', text);
     throw new Error(`API error ${response.status}: ${text}`);
   }
 
