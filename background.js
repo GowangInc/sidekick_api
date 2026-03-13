@@ -65,41 +65,44 @@ Examples:
 Only use commands when the user asks you to interact with the page. For questions about the page, just answer normally. Always explain what you're doing before using commands.`;
 
 async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
-  // Build message content — text context + optional screenshot
-  const contentParts = [];
-
-  // Add screenshot if available and vision hasn't failed
-  if (screenshot && visionSupported) {
-    contentParts.push({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: 'image/png',
-        data: screenshot
-      }
-    });
-  }
-
   // Build text with page context
   let textContent = userMessage;
   if (context) {
     textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 3000)}\n\nUser Request: ${userMessage}`;
   }
-  contentParts.push({ type: 'text', text: textContent });
 
-  const messages = [{ role: 'user', content: contentParts }];
+  // Use array format with image block only when sending a screenshot,
+  // otherwise use plain string (some APIs don't support content arrays)
+  const useVision = screenshot && visionSupported;
+  let messageContent;
+
+  if (useVision) {
+    messageContent = [
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: screenshot
+        }
+      },
+      { type: 'text', text: textContent }
+    ];
+  } else {
+    messageContent = textContent;
+  }
+
+  const messages = [{ role: 'user', content: messageContent }];
 
   let response;
   try {
     response = await callAPI(config, messages, null, SYSTEM_PROMPT_SIMPLE);
   } catch (error) {
-    // If vision caused the error, retry without screenshot
-    if (screenshot && visionSupported && error.message.includes('400')) {
+    // If vision caused the error, retry with plain string
+    if (useVision && error.message.includes('400')) {
       visionSupported = false;
       console.log('Vision not supported by API, falling back to text-only');
-      // Rebuild without image
-      const textOnly = [{ type: 'text', text: textContent }];
-      const retryMessages = [{ role: 'user', content: textOnly }];
+      const retryMessages = [{ role: 'user', content: textContent }];
       response = await callAPI(config, retryMessages, null, SYSTEM_PROMPT_SIMPLE);
     } else {
       throw error;
