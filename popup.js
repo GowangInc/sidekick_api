@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.getElementById('baseUrl').value = config.apiConfig.baseUrl || '';
     document.getElementById('apiKey').value = config.apiConfig.apiKey || '';
     document.getElementById('model').value = config.apiConfig.model || '';
+    document.getElementById('toolUse').checked = config.apiConfig.toolUse || false;
   }
 });
 
@@ -34,7 +35,8 @@ document.getElementById('save').addEventListener('click', async () => {
     provider: document.getElementById('provider').value,
     baseUrl: document.getElementById('baseUrl').value.trim(),
     apiKey: document.getElementById('apiKey').value.trim(),
-    model: document.getElementById('model').value.trim()
+    model: document.getElementById('model').value.trim(),
+    toolUse: document.getElementById('toolUse').checked
   };
 
   await chrome.storage.local.set({ apiConfig: config });
