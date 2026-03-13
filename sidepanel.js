@@ -20,7 +20,10 @@ input.addEventListener('keypress', (e) => {
 
 sendBtn.addEventListener('click', sendMessage);
 settingsBtn.addEventListener('click', openSettings);
-refreshBtn.addEventListener('click', refreshContext);
+refreshBtn.addEventListener('click', async () => {
+  await refreshContext();
+  addMessage('Context refreshed', 'assistant');
+});
 
 function openSettings() {
   chrome.runtime.openOptionsPage();
@@ -31,6 +34,7 @@ async function init() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     lockedTabId = tab.id;
     await refreshContext();
+    addMessage(`Page loaded: ${pageContext?.title || 'Unknown'}`, 'assistant');
     // Watch for navigation within the locked tab
     chrome.tabs.onUpdated.addListener(onTabUpdated);
   } catch (error) {
@@ -46,16 +50,10 @@ function onTabUpdated(tabId, changeInfo, tab) {
 }
 
 async function refreshContext() {
-  const isFirstLoad = !pageContext;
   await getPageContext();
   await captureScreenshot();
   if (pageContext) {
     updatePageInfoBar();
-    if (isFirstLoad) {
-      addMessage(`Page loaded: ${pageContext.title}`, 'assistant');
-    } else {
-      addMessage(`Page context refreshed`, 'assistant');
-    }
   }
 }
 
@@ -68,20 +66,16 @@ async function getPageContext() {
     });
     pageContext = result.result;
   } catch (error) {
-    addMessage('Failed to get page: ' + error.message, 'error');
+    // Silently fail — page may be navigating
   }
 }
 
 async function captureScreenshot() {
   try {
-    // captureVisibleTab requires the tab to be in the active window
     const tab = await chrome.tabs.get(lockedTabId);
-    // Focus the tab's window briefly to capture
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
-    // Strip the data:image/png;base64, prefix
     screenshotBase64 = dataUrl.replace(/^data:image\/png;base64,/, '');
   } catch (error) {
-    console.log('Screenshot capture failed, using text-only mode:', error.message);
     screenshotBase64 = null;
   }
 }
@@ -101,6 +95,9 @@ async function sendMessage() {
   input.value = '';
   sendBtn.disabled = true;
 
+  // Take a fresh screenshot right before sending
+  await refreshContext();
+
   try {
     const response = await chrome.runtime.sendMessage({
       type: 'SEND_MESSAGE',
@@ -114,8 +111,14 @@ async function sendMessage() {
       addMessage(response.error, 'error');
     } else {
       addMessage(response.content, 'assistant');
-      // If commands were executed, refresh context
-      if (response.commandsExecuted) {
+
+      // If commands were executed, show results and refresh
+      if (response.commandsExecuted && response.actionResults) {
+        for (const ar of response.actionResults) {
+          addMessage(`Action: ${ar.command} → ${ar.result}`, 'action');
+        }
+        // Wait a moment for page to settle, then refresh context
+        await new Promise(r => setTimeout(r, 1500));
         await refreshContext();
       }
     }
@@ -124,6 +127,7 @@ async function sendMessage() {
   }
 
   sendBtn.disabled = false;
+  input.focus();
 }
 
 function addMessage(content, type) {

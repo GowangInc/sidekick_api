@@ -7,6 +7,9 @@ const openPanelTabs = new Set();
 // Track if vision failed so we don't keep retrying
 let visionSupported = true;
 
+// Conversation history per tab
+const conversationHistory = new Map();
+
 // Handle action click manually: enable panel for this tab, then open it
 chrome.action.onClicked.addListener(async (tab) => {
   openPanelTabs.add(tab.id);
@@ -21,6 +24,7 @@ chrome.action.onClicked.addListener(async (tab) => {
 // Clean up when tabs are closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   openPanelTabs.delete(tabId);
+  conversationHistory.delete(tabId);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -28,6 +32,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleAIMessage(message.content, message.context, message.screenshot, message.tabId)
       .then(sendResponse);
     return true;
+  }
+  if (message.type === 'CLEAR_HISTORY') {
+    conversationHistory.delete(message.tabId);
+    sendResponse({ ok: true });
+    return false;
   }
 });
 
@@ -50,19 +59,30 @@ async function handleAIMessage(content, context, screenshot, tabId) {
 
 // ── No-tool mode: text + optional screenshot, parse commands from response ──
 
-const SYSTEM_PROMPT_SIMPLE = `You are an AI assistant running inside a Chrome browser extension. You can see the current web page's content and optionally a screenshot.
+const SYSTEM_PROMPT_SIMPLE = `You are an AI browser assistant running inside a Chrome extension. You can see the page content (and optionally a screenshot) and interact with it using commands.
 
-You can interact with the page by including commands in your response:
-- [CLICK: css-selector] — clicks the element matching the CSS selector
-- [FILL: css-selector | value] — fills the input matching the CSS selector with the given value
+## Available Commands
 
-Examples:
-- [CLICK: button.submit]
-- [CLICK: #login-btn]
-- [FILL: input[name="email"] | user@example.com]
-- [FILL: #search | search query]
+Place commands on their own line in your response:
 
-Only use commands when the user asks you to interact with the page. For questions about the page, just answer normally. Always explain what you're doing before using commands.`;
+- [CLICK: css-selector] — Click an element
+- [FILL: css-selector | value] — Set an input's value (fires change events)
+- [TYPE: css-selector | value] — Type into a field character by character (for React/dynamic forms)
+- [SELECT: css-selector | value] — Select a dropdown option by value
+- [SCROLL: up] or [SCROLL: down] or [SCROLL: selector] — Scroll the page or to an element
+- [READ: css-selector] — Extract and return text content from an element
+- [NAVIGATE: url] — Navigate to a URL
+- [WAIT: milliseconds] — Wait for the page to settle (e.g. after a click)
+
+## Guidelines
+
+- For questions about the page, just answer normally — no commands needed.
+- When asked to interact, explain briefly what you'll do, then use commands.
+- After clicking a link or button that causes navigation, use [WAIT: 1000] to let the page load.
+- Use [READ: selector] to extract specific data from elements.
+- For forms, prefer [TYPE: ...] over [FILL: ...] for dynamic/React-based pages.
+- You can chain multiple commands in one response for multi-step tasks.
+- You have conversation memory — you remember what you've done and seen before in this session.`;
 
 async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Build text with page context
@@ -71,39 +91,269 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
     textContent = `Current Page: ${context.title}\nURL: ${context.url}\n\nPage Content:\n${context.text.slice(0, 3000)}\n\nUser Request: ${userMessage}`;
   }
 
-  // Only use plain string — screenshot support can be enabled later
-  const messages = [{ role: 'user', content: textContent }];
+  // Build the user message content — with or without screenshot
+  const useVision = screenshot && visionSupported;
+  let messageContent;
 
-  const response = await callAPI(config, messages, null, SYSTEM_PROMPT_SIMPLE);
+  if (useVision) {
+    messageContent = [
+      {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: 'image/png',
+          data: screenshot
+        }
+      },
+      { type: 'text', text: textContent }
+    ];
+  } else {
+    messageContent = textContent;
+  }
+
+  // Get or create conversation history for this tab
+  if (!conversationHistory.has(tabId)) {
+    conversationHistory.set(tabId, []);
+  }
+  const history = conversationHistory.get(tabId);
+
+  // Add user message to history
+  history.push({ role: 'user', content: messageContent });
+
+  // Keep history manageable (last 20 messages)
+  while (history.length > 20) {
+    history.shift();
+  }
+
+  let response;
+  try {
+    response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
+  } catch (error) {
+    // If vision caused the error, retry with plain string
+    if (useVision && error.message.includes('400')) {
+      visionSupported = false;
+      // Replace the last message with text-only version
+      history[history.length - 1] = { role: 'user', content: textContent };
+      response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
+    } else {
+      throw error;
+    }
+  }
 
   const textBlock = response.content.find(b => b.type === 'text');
   const text = textBlock ? textBlock.text : 'Done';
 
-  // Parse and execute any commands in the response
-  const commandsExecuted = await parseAndExecuteCommands(text, tabId);
+  // Add assistant response to history
+  history.push({ role: 'assistant', content: text });
 
-  return { content: text, commandsExecuted };
+  // Parse and execute any commands in the response
+  const actionResults = await parseAndExecuteCommands(text, tabId);
+
+  // If commands were executed, add results to history for next turn
+  if (actionResults.length > 0) {
+    const resultSummary = actionResults.map(r => `${r.command}: ${r.result}`).join('\n');
+    history.push({ role: 'user', content: `[Action results]\n${resultSummary}` });
+  }
+
+  return {
+    content: text,
+    commandsExecuted: actionResults.length > 0,
+    actionResults
+  };
 }
 
 async function parseAndExecuteCommands(text, tabId) {
-  const clickRegex = /\[CLICK:\s*(.+?)\]/g;
-  const fillRegex = /\[FILL:\s*(.+?)\s*\|\s*(.+?)\]/g;
-  let executed = false;
+  const results = [];
 
-  for (const match of text.matchAll(clickRegex)) {
-    const selector = match[1].trim();
-    await executeToolOnPage('click_element', { selector }, tabId);
-    executed = true;
+  // Match all command patterns
+  const commandRegex = /\[(CLICK|FILL|TYPE|SELECT|SCROLL|READ|NAVIGATE|WAIT):\s*(.+?)\]/g;
+
+  for (const match of text.matchAll(commandRegex)) {
+    const command = match[1];
+    const args = match[2];
+
+    try {
+      let result;
+      switch (command) {
+        case 'CLICK':
+          result = await executeOnPage(tabId, 'click', { selector: args.trim() });
+          break;
+        case 'FILL': {
+          const [selector, value] = args.split('|').map(s => s.trim());
+          result = await executeOnPage(tabId, 'fill', { selector, value });
+          break;
+        }
+        case 'TYPE': {
+          const [selector, value] = args.split('|').map(s => s.trim());
+          result = await executeOnPage(tabId, 'type', { selector, value });
+          break;
+        }
+        case 'SELECT': {
+          const [selector, value] = args.split('|').map(s => s.trim());
+          result = await executeOnPage(tabId, 'select', { selector, value });
+          break;
+        }
+        case 'SCROLL':
+          result = await executeOnPage(tabId, 'scroll', { target: args.trim() });
+          break;
+        case 'READ':
+          result = await executeOnPage(tabId, 'read', { selector: args.trim() });
+          break;
+        case 'NAVIGATE':
+          result = await executeOnPage(tabId, 'navigate', { url: args.trim() });
+          break;
+        case 'WAIT': {
+          const ms = Math.min(parseInt(args.trim()) || 1000, 5000);
+          await new Promise(resolve => setTimeout(resolve, ms));
+          result = `Waited ${ms}ms`;
+          break;
+        }
+      }
+      results.push({ command: `${command}: ${args}`, result: result || 'Done' });
+    } catch (error) {
+      results.push({ command: `${command}: ${args}`, result: `Error: ${error.message}` });
+    }
   }
 
-  for (const match of text.matchAll(fillRegex)) {
-    const selector = match[1].trim();
-    const value = match[2].trim();
-    await executeToolOnPage('fill_form', { selector, value }, tabId);
-    executed = true;
+  return results;
+}
+
+async function executeOnPage(tabId, action, params) {
+  if (!tabId) {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    tabId = tab.id;
   }
 
-  return executed;
+  if (action === 'click') {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return 'Element not found: ' + sel;
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        el.click();
+        return 'Clicked: ' + (el.textContent || el.tagName).slice(0, 50);
+      },
+      args: [params.selector]
+    });
+    return result.result;
+  }
+
+  if (action === 'fill') {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel, val) => {
+        const el = document.querySelector(sel);
+        if (!el) return 'Element not found: ' + sel;
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+          window.HTMLInputElement.prototype, 'value'
+        )?.set || Object.getOwnPropertyDescriptor(
+          window.HTMLTextAreaElement.prototype, 'value'
+        )?.set;
+        if (nativeInputValueSetter) {
+          nativeInputValueSetter.call(el, val);
+        } else {
+          el.value = val;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+        return 'Filled: ' + sel + ' = ' + val;
+      },
+      args: [params.selector, params.value]
+    });
+    return result.result;
+  }
+
+  if (action === 'type') {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel, val) => {
+        const el = document.querySelector(sel);
+        if (!el) return 'Element not found: ' + sel;
+        el.focus();
+        el.value = '';
+        for (const char of val) {
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: char, bubbles: true }));
+          el.dispatchEvent(new KeyboardEvent('keypress', { key: char, bubbles: true }));
+          el.value += char;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new KeyboardEvent('keyup', { key: char, bubbles: true }));
+        }
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'Typed: ' + val;
+      },
+      args: [params.selector, params.value]
+    });
+    return result.result;
+  }
+
+  if (action === 'select') {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel, val) => {
+        const el = document.querySelector(sel);
+        if (!el) return 'Element not found: ' + sel;
+        el.value = val;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return 'Selected: ' + val;
+      },
+      args: [params.selector, params.value]
+    });
+    return result.result;
+  }
+
+  if (action === 'scroll') {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (target) => {
+        if (target === 'up') {
+          window.scrollBy(0, -500);
+          return 'Scrolled up';
+        } else if (target === 'down') {
+          window.scrollBy(0, 500);
+          return 'Scrolled down';
+        } else if (target === 'top') {
+          window.scrollTo(0, 0);
+          return 'Scrolled to top';
+        } else if (target === 'bottom') {
+          window.scrollTo(0, document.body.scrollHeight);
+          return 'Scrolled to bottom';
+        } else {
+          const el = document.querySelector(target);
+          if (!el) return 'Element not found: ' + target;
+          el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          return 'Scrolled to: ' + target;
+        }
+      },
+      args: [params.target]
+    });
+    return result.result;
+  }
+
+  if (action === 'read') {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return 'Element not found: ' + sel;
+        return el.innerText.slice(0, 2000);
+      },
+      args: [params.selector]
+    });
+    return result.result;
+  }
+
+  if (action === 'navigate') {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (url) => { window.location.href = url; },
+      args: [params.url]
+    });
+    return 'Navigating to: ' + params.url;
+  }
+
+  return 'Unknown action';
 }
 
 // ── Tool-use mode: existing Anthropic tool calling loop ──
@@ -153,7 +403,7 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
 
     const toolResults = [];
     for (const toolUse of toolUseBlocks) {
-      const result = await executeToolOnPage(toolUse.name, toolUse.input, tabId);
+      const result = await executeOnPage(tabId, toolUse.name === 'click_element' ? 'click' : 'fill', toolUse.input);
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolUse.id,
@@ -166,7 +416,7 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
   }
 }
 
-// ── Shared: API call and page interaction ──
+// ── Shared: API call ──
 
 async function callAPI(config, messages, tools, systemPrompt) {
   const body = {
@@ -176,7 +426,6 @@ async function callAPI(config, messages, tools, systemPrompt) {
     messages
   };
 
-  // Only include tools if provided (tool-use mode)
   if (tools) {
     body.tools = tools;
   }
@@ -197,38 +446,4 @@ async function callAPI(config, messages, tools, systemPrompt) {
   }
 
   return await response.json();
-}
-
-async function executeToolOnPage(toolName, toolInput, tabId) {
-  // Use the locked tab ID, fall back to active tab if not provided
-  if (!tabId) {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    tabId = tab.id;
-  }
-
-  if (toolName === 'click_element') {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (sel) => {
-        const el = document.querySelector(sel);
-        if (el) el.click();
-      },
-      args: [toolInput.selector]
-    });
-    return 'Clicked';
-  }
-
-  if (toolName === 'fill_form') {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (sel, val) => {
-        const el = document.querySelector(sel);
-        if (el) el.value = val;
-      },
-      args: [toolInput.selector, toolInput.value]
-    });
-    return 'Filled';
-  }
-
-  return 'Unknown tool';
 }
