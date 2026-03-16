@@ -2,6 +2,7 @@ const messagesDiv = document.getElementById('messages');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
 const exportBtn = document.getElementById('export-btn');
+const themeBtn = document.getElementById('theme-btn');
 const settingsBtn = document.getElementById('settings-btn');
 const settingsPanel = document.getElementById('settings-panel');
 const saveSettingsBtn = document.getElementById('save-settings');
@@ -16,15 +17,58 @@ let screenshotBase64 = null;
 let port = null;
 let loadingEl = null;
 
+// Conversation templates
+const TEMPLATES = {
+  summarize: "Summarize this page in 3 bullet points",
+  extract_links: "Extract all links from this page and categorize them",
+  find_forms: "List all forms on this page and their fields",
+  extract_data: "Extract structured data from this page as JSON"
+};
+
+// Theme management
+async function loadTheme() {
+  const { theme } = await chrome.storage.local.get('theme');
+  document.documentElement.setAttribute('data-theme', theme || 'dark');
+}
+
+async function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme');
+  const newTheme = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', newTheme);
+  await chrome.storage.local.set({ theme: newTheme });
+}
+
+loadTheme();
+
 // Lock to the current tab on startup
 init();
 
 input.addEventListener('keypress', (e) => {
-  if (e.key === 'Enter') sendMessage();
+  if (e.key === 'Enter' && !e.shiftKey) {
+    sendMessage();
+  }
+});
+
+// Template shortcuts
+input.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === '1') {
+    e.preventDefault();
+    input.value = TEMPLATES.summarize;
+  } else if (e.ctrlKey && e.key === '2') {
+    e.preventDefault();
+    input.value = TEMPLATES.extract_links;
+  } else if (e.ctrlKey && e.key === '3') {
+    e.preventDefault();
+    input.value = TEMPLATES.find_forms;
+  } else if (e.ctrlKey && e.key === '4') {
+    e.preventDefault();
+    input.value = TEMPLATES.extract_data;
+  }
 });
 
 sendBtn.addEventListener('click', sendMessage);
 exportBtn.addEventListener('click', exportConversation);
+themeBtn.addEventListener('click', toggleTheme);
 settingsBtn.addEventListener('click', toggleSettings);
 saveSettingsBtn.addEventListener('click', saveSettings);
 refreshBtn.addEventListener('click', async () => {
@@ -106,8 +150,26 @@ async function init() {
     port = chrome.runtime.connect({ name: `sidepanel-${lockedTabId}` });
     port.onMessage.addListener(onStatusUpdate);
 
+    // Load saved conversation
+    const { history } = await chrome.runtime.sendMessage({
+      type: 'LOAD_HISTORY',
+      tabId: lockedTabId
+    });
+
+    if (history && history.length > 0) {
+      for (const msg of history) {
+        if (msg.role === 'user') {
+          addMessage(typeof msg.content === 'string' ? msg.content : 'Message with image', 'user');
+        } else if (msg.role === 'assistant') {
+          addMessage(msg.content, 'assistant');
+        }
+      }
+    }
+
     await refreshContext();
-    addMessage(`Page loaded: ${pageContext?.title || 'Unknown'}`, 'assistant');
+    if (!history || history.length === 0) {
+      addMessage(`Page loaded: ${pageContext?.title || 'Unknown'}`, 'assistant');
+    }
     chrome.tabs.onUpdated.addListener(onTabUpdated);
   } catch (error) {
     addMessage('Failed to initialize: ' + error.message, 'error');
@@ -295,8 +357,18 @@ function renderMarkdown(text) {
   text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
 
+  // Strikethrough
+  text = text.replace(/~~(.+?)~~/g, '<del>$1</del>');
+
   // Horizontal rule
   text = text.replace(/^---$/gm, '<hr>');
+
+  // Blockquotes
+  text = text.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Task lists
+  text = text.replace(/^- \[ \] (.+)$/gm, '<li class="task"><input type="checkbox" disabled> $1</li>');
+  text = text.replace(/^- \[x\] (.+)$/gmi, '<li class="task"><input type="checkbox" checked disabled> $1</li>');
 
   // Unordered lists — collect consecutive lines
   text = text.replace(/^([ \t]*[-*] .+(\n|$))+/gm, (block) => {
@@ -317,8 +389,15 @@ function renderMarkdown(text) {
   // Links [text](url)
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
 
+  // Tables (simple)
+  text = text.replace(/^\|(.+)\|$/gm, (match) => {
+    const cells = match.split('|').filter(c => c.trim()).map(c => c.trim());
+    return '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
+  });
+  text = text.replace(/(<tr>.*<\/tr>\n?)+/g, '<table>$&</table>');
+
   // Paragraphs — wrap remaining loose text lines
-  text = text.replace(/^(?!<[a-z])((?!<\/?(ul|ol|li|h[2-4]|pre|hr|blockquote)[ >]).+)$/gm, '<p>$1</p>');
+  text = text.replace(/^(?!<[a-z])((?!<\/?(ul|ol|li|h[2-4]|pre|hr|blockquote|table)[ >]).+)$/gm, '<p>$1</p>');
 
   // Clean up empty paragraphs
   text = text.replace(/<p>\s*<\/p>/g, '');

@@ -1,0 +1,11 @@
+{
+  "name": "sidekick-api",
+  "version": "2.4.0",
+  "description": "AI-powered browser sidekick",
+  "scripts": {
+    "test": "node tests/run-tests.js"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

@@ -1,3 +1,6 @@
+// Import utilities
+importScripts('lib/api-client.js', 'lib/storage.js', 'lib/selectors.js', 'lib/extended-commands.js');
+
 // Disable side panel globally — only enabled per-tab on click
 chrome.sidePanel.setOptions({ enabled: false });
 
@@ -15,6 +18,12 @@ const activePorts = new Map();
 
 // Screenshot counter per tab
 const screenshotCounters = new Map();
+
+// Rate limiter
+const rateLimiter = new RateLimiter(10, 60000);
+
+// Clean old conversations on startup
+cleanOldConversations();
 
 async function saveScreenshot(tabId, url, dataUrl) {
   const domain = new URL(url).hostname.replace(/[^a-z0-9]/gi, '_');
@@ -36,8 +45,28 @@ chrome.action.onClicked.addListener((tab) => {
   chrome.sidePanel.open({ tabId: tab.id });
 });
 
+// Keyboard shortcuts
+chrome.commands.onCommand.addListener(async (command, tab) => {
+  if (command === 'toggle-sidebar') {
+    openPanelTabs.add(tab.id);
+    chrome.sidePanel.setOptions({ tabId: tab.id, path: 'sidepanel.html', enabled: true });
+    chrome.sidePanel.open({ tabId: tab.id });
+  } else if (command === 'take-screenshot') {
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      await saveScreenshot(tab.id, tab.url, dataUrl);
+    } catch (e) {
+      console.error('Screenshot failed:', e);
+    }
+  }
+});
+
 // Clean up when tabs are closed
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const history = conversationHistory.get(tabId);
+  if (history && history.length > 0) {
+    await saveConversation(tabId, history);
+  }
   openPanelTabs.delete(tabId);
   conversationHistory.delete(tabId);
   activePorts.delete(tabId);
@@ -72,8 +101,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.type === 'CLEAR_HISTORY') {
     conversationHistory.delete(message.tabId);
-    sendResponse({ ok: true });
-    return false;
+    clearConversation(message.tabId).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message.type === 'LOAD_HISTORY') {
+    loadConversation(message.tabId).then(history => {
+      if (history) conversationHistory.set(message.tabId, history);
+      sendResponse({ history });
+    });
+    return true;
   }
 });
 
@@ -84,7 +120,8 @@ async function testToolUseSupport(config) {
       description: 'Test tool',
       input_schema: { type: 'object', properties: {}, required: [] }
     }];
-    await callAPI(config, [{ role: 'user', content: 'test' }], testTools, 'Test');
+    const apiClient = new APIClient(config);
+    await apiClient.call([{ role: 'user', content: 'test' }], testTools, 'Test');
     return { supported: true };
   } catch (error) {
     return { supported: false, error: error.message };
@@ -117,13 +154,31 @@ const SYSTEM_PROMPT_SIMPLE = `You are an AI browser assistant running inside a C
 Place commands on their own line in your response:
 
 - [CLICK: css-selector] — Click an element
+- [DOUBLE_CLICK: css-selector] — Double click an element
+- [RIGHT_CLICK: css-selector] — Right click (context menu)
 - [FILL: css-selector | value] — Set an input's value (fires change events)
 - [TYPE: css-selector | value] — Type into a field character by character (for React/dynamic forms)
 - [SELECT: css-selector | value] — Select a dropdown option by value
 - [SCROLL: up] or [SCROLL: down] or [SCROLL: selector] — Scroll the page or to an element
 - [READ: css-selector] — Extract and return text content from an element
-- [SCREENSHOT] — Capture a screenshot of the current page
+- [HOVER: css-selector] — Hover over an element
+- [EXTRACT_TABLE: css-selector] — Extract table data as JSON
+- [EXTRACT_LINKS] — Get all links on the page with text and URLs
+- [EXTRACT_IMAGES] — Get all images with src and alt text
+- [EXPORT_CSV: css-selector] — Export table to CSV file
+- [WAIT_FOR: css-selector] — Wait for an element to appear (max 5s)
+- [GET_ATTRS: css-selector] — Get all attributes of an element
+- [PRESS_KEY: key] — Press a keyboard key (Enter, Escape, Tab, etc)
 - [NAVIGATE: url] — Navigate to a URL
+- [NEW_TAB: url] — Open URL in new tab
+- [BACK] — Go back in browser history
+- [FORWARD] — Go forward in browser history
+- [RELOAD] — Refresh the page
+- [CLOSE_TAB] — Close current tab
+- [SAVE_PDF] — Save current page as PDF
+- [SCREENSHOT] — Capture a screenshot of the current page
+- [RUN_JS: code] — Execute JavaScript code on the page
+- [GET_COOKIES] — Get all cookies for current domain
 - [WAIT: milliseconds] — Wait for the page to settle (e.g. after a click)
 
 ## Guidelines
@@ -149,9 +204,13 @@ Place commands on their own line in your response:
 async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
   // Get or create conversation history for this tab
   if (!conversationHistory.has(tabId)) {
-    conversationHistory.set(tabId, []);
+    const saved = await loadConversation(tabId);
+    conversationHistory.set(tabId, saved || []);
   }
   const history = conversationHistory.get(tabId);
+
+  // Rate limiting
+  await rateLimiter.acquire();
 
   // Build first user message with page context
   let textContent = userMessage;
@@ -191,13 +250,15 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
 
     let response;
     try {
-      response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
+      const apiClient = new APIClient(config);
+      response = await apiClient.call([...history], null, SYSTEM_PROMPT_SIMPLE);
     } catch (error) {
       // Vision fallback on first turn
       if (turn === 0 && useVision && error.message.includes('400')) {
         visionSupported = false;
         history[history.length - 1] = { role: 'user', content: textContent };
-        response = await callAPI(config, [...history], null, SYSTEM_PROMPT_SIMPLE);
+        const apiClient = new APIClient(config);
+        response = await apiClient.call([...history], null, SYSTEM_PROMPT_SIMPLE);
       } else {
         throw error;
       }
@@ -257,6 +318,9 @@ async function runSimpleChat(config, userMessage, context, screenshot, tabId) {
       history.shift();
     }
   }
+
+  // Save conversation before returning
+  await saveConversation(tabId, history);
 
   return {
     content: allResponses.join('\n\n---\n\n'),
@@ -376,7 +440,7 @@ async function getPageContextFromTab(tabId) {
 
 async function parseAndExecuteCommands(text, tabId) {
   const results = [];
-  const commandRegex = /\[(CLICK|FILL|TYPE|SELECT|SCROLL|READ|SCREENSHOT|NAVIGATE|WAIT):\s*(.+?)\]|\[SCREENSHOT\]/g;
+  const commandRegex = /\[(CLICK|FILL|TYPE|SELECT|SCROLL|READ|SCREENSHOT|NAVIGATE|WAIT|HOVER|EXTRACT_TABLE|WAIT_FOR|GET_ATTRS|SAVE_PDF|EXTRACT_LINKS|PRESS_KEY|BACK|FORWARD|NEW_TAB|CLOSE_TAB|RELOAD|UPLOAD_FILE|EXPORT_CSV|RUN_JS|EXTRACT_IMAGES|DOUBLE_CLICK|RIGHT_CLICK|GET_COOKIES):\s*(.+?)\]|\[SCREENSHOT\]|\[SAVE_PDF\]|\[EXTRACT_LINKS\]|\[BACK\]|\[FORWARD\]|\[CLOSE_TAB\]|\[RELOAD\]|\[EXTRACT_IMAGES\]|\[GET_COOKIES\]/g;
 
   for (const match of text.matchAll(commandRegex)) {
     const command = match[1] || 'SCREENSHOT';
@@ -408,6 +472,65 @@ async function parseAndExecuteCommands(text, tabId) {
           break;
         case 'READ':
           result = await executeOnPage(tabId, 'read', { selector: args.trim() });
+          break;
+        case 'HOVER':
+          result = await ExtendedCommands.hover(tabId, args.trim());
+          break;
+        case 'EXTRACT_TABLE':
+          result = await ExtendedCommands.extractTable(tabId, args.trim());
+          break;
+        case 'WAIT_FOR':
+          result = await ExtendedCommands.waitFor(tabId, args.trim());
+          break;
+        case 'GET_ATTRS':
+          result = await ExtendedCommands.getAttributes(tabId, args.trim());
+          break;
+        case 'SAVE_PDF':
+          result = await ExtendedCommands.printToPdf(tabId);
+          break;
+        case 'EXTRACT_LINKS':
+          result = await ExtendedCommands.extractLinks(tabId);
+          break;
+        case 'PRESS_KEY':
+          result = await ExtendedCommands.pressKey(tabId, args.trim());
+          break;
+        case 'BACK':
+          result = await ExtendedCommands.goBack(tabId);
+          break;
+        case 'FORWARD':
+          result = await ExtendedCommands.goForward(tabId);
+          break;
+        case 'NEW_TAB':
+          result = await ExtendedCommands.newTab(tabId, args.trim());
+          break;
+        case 'CLOSE_TAB':
+          result = await ExtendedCommands.closeTab(tabId);
+          break;
+        case 'RELOAD':
+          result = await ExtendedCommands.reload(tabId);
+          break;
+        case 'UPLOAD_FILE': {
+          const [selector, filepath] = args.split('|').map(s => s.trim());
+          result = await ExtendedCommands.uploadFile(tabId, selector, filepath);
+          break;
+        }
+        case 'EXPORT_CSV':
+          result = await ExtendedCommands.exportCsv(tabId, args.trim());
+          break;
+        case 'RUN_JS':
+          result = await ExtendedCommands.runJavascript(tabId, args.trim());
+          break;
+        case 'EXTRACT_IMAGES':
+          result = await ExtendedCommands.extractImages(tabId);
+          break;
+        case 'DOUBLE_CLICK':
+          result = await ExtendedCommands.doubleClick(tabId, args.trim());
+          break;
+        case 'RIGHT_CLICK':
+          result = await ExtendedCommands.rightClick(tabId, args.trim());
+          break;
+        case 'GET_COOKIES':
+          result = await ExtendedCommands.getCookies(tabId);
           break;
         case 'SCREENSHOT': {
           try {
@@ -567,11 +690,19 @@ async function executeOnPage(tabId, action, params) {
   return 'Unknown action';
 }
 
-// ── Tool-use mode: existing Anthropic tool calling loop ──
 
 const SYSTEM_PROMPT_TOOLS = `You are an AI assistant running inside a Chrome browser extension. You have direct access to interact with the current web page using the provided tools. When the user asks you to click something or fill a form, use the click_element and fill_form tools. You ARE able to interact with web pages - that is your primary function.`;
 
 async function runToolUseLoop(config, userMessage, context, tabId) {
+  // Load conversation history
+  if (!conversationHistory.has(tabId)) {
+    const saved = await loadConversation(tabId);
+    conversationHistory.set(tabId, saved || []);
+  }
+
+  // Rate limiting
+  await rateLimiter.acquire();
+
   const tools = [
     {
       name: 'click_element',
@@ -604,13 +735,18 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
   }
 
   let messages = [{ role: 'user', content: messageContent }];
+  const apiClient = new APIClient(config);
 
   while (true) {
-    const response = await callAPI(config, messages, tools, SYSTEM_PROMPT_TOOLS);
+    const response = await apiClient.call(messages, tools, SYSTEM_PROMPT_TOOLS);
     const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
 
     if (toolUseBlocks.length === 0) {
       const textBlock = response.content.find(b => b.type === 'text');
+      const history = conversationHistory.get(tabId) || [];
+      history.push({ role: 'user', content: messageContent });
+      history.push({ role: 'assistant', content: textBlock?.text || 'Done' });
+      await saveConversation(tabId, history);
       return { content: textBlock ? textBlock.text : 'Done' };
     }
 
@@ -629,42 +765,3 @@ async function runToolUseLoop(config, userMessage, context, tabId) {
   }
 }
 
-// ── Shared: API call ──
-
-async function callAPI(config, messages, tools, systemPrompt) {
-  const body = {
-    model: config.model,
-    max_tokens: 16384,
-    system: systemPrompt,
-    messages
-  };
-
-  if (tools) {
-    body.tools = tools;
-  }
-
-  console.log('[API] Sending request:', {
-    model: body.model,
-    messageCount: messages.length,
-    hasTools: !!tools,
-    lastMessage: messages[messages.length - 1]
-  });
-
-  const response = await fetch(`${config.baseUrl}/v1/messages`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    console.error('[API] Error response:', text);
-    throw new Error(`API error ${response.status}: ${text}`);
-  }
-
-  return await response.json();
-}
